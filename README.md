@@ -4,7 +4,7 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
 
 ## What it does
 
-1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity.
+1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity. **Spares are per genotype per planting group**: a spare can only replace a pot planted the same day. They are added once the groups are known, and never change the number of groups. Spare tags carry their group, for example `B73-G2-SPARE-01`.
 2. **Planting groups**: N2O is measured one pot at a time, at most *max N2O measurements / day* (50 by default). Planting is staggered so that no day needs more than that, and **a flood never falls on an N2O day**. The pots are split into the **fewest equally sized groups** that fit, planted at least 3 days apart by default (one group's 24 h and 48 h N2O days, then the next group's flood), or further apart if needed. The split is random but balanced: every genotype x cohort x treatment cell is spread over the groups as evenly as it divides.
 3. **Bench layout**: pots are spread over the **tables you say are available**, then the zones of each table. Each cell and each planting group is spread as evenly as it divides, and slots are random. A table holds up to 8 zones x 25 slots. Positions are written `T1-Z2-05`.
 4. **Timeline**: per planting group and cohort, all counted in days after planting (DAP):

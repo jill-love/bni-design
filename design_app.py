@@ -136,8 +136,10 @@ class DesignWindow(QtWidgets.QMainWindow):
         tr = QtWidgets.QHBoxLayout(); tr.addWidget(self.treat_on); tr.addWidget(self.treat, 1)
         fl.addRow(tr)
         self.spares = QtWidgets.QSpinBox(); self.spares.setRange(0, 100)
-        self.spares.setToolTip("Spare pots per genotype, placed at random like the rest")
-        fl.addRow("Spares per genotype", self.spares)
+        self.spares.setToolTip("Spare pots of each genotype in EACH planting group: a spare can "
+                               "only replace a pot planted the same day. Placed at random "
+                               "like the rest.")
+        fl.addRow("Spares per genotype\nper planting group", self.spares)
         self.seed = QtWidgets.QSpinBox(); self.seed.setRange(0, 999999)
         self.seed.setToolTip("The same seed always gives the same layout and grouping. "
                              "Change it for a different randomisation.")
@@ -263,7 +265,7 @@ class DesignWindow(QtWidgets.QMainWindow):
         self.treat_on.setChecked(p.treatment_dap is not None)
         self.treat.setEnabled(p.treatment_dap is not None)
         self.treat.setValue(p.treatment_dap or 0)
-        self.spares.setValue(p.spares_per_genotype)
+        self.spares.setValue(p.spares_per_genotype_per_group)
         self.seed.setValue(p.seed)
         self.tables.setValue(p.tables)
         self.zones.setValue(p.zones_per_table)
@@ -313,7 +315,7 @@ class DesignWindow(QtWidgets.QMainWindow):
             tables=self.tables.value(), zones_per_table=self.zones.value(),
             slots_per_zone=self.slots.value(), max_measured_per_day=self.cap.value(),
             min_stagger_days=self.min_gap.value(), planting_groups=self.groups.value(),
-            spares_per_genotype=self.spares.value(), cohorts=cohorts, rows=rows)
+            spares_per_genotype_per_group=self.spares.value(), cohorts=cohorts, rows=rows)
 
     # ---- small helpers ----
     def _paint(self, color, text):
@@ -331,9 +333,12 @@ class DesignWindow(QtWidgets.QMainWindow):
             self.table.setRowCount(self._last_used_row() + BLANK_ROWS)
             self.table.blockSignals(False)
         try:
-            n = dc.count_pots(self.read_plan())
+            plan = self.read_plan()
+            n = dc.count_pots(plan)
             cap = self.tables.value() * self.zones.value() * self.slots.value()
-            self.total_lbl.setText(f"{n} pots / room for {cap}")
+            sp = plan.spares_per_genotype_per_group * len(dc.genotypes(plan))
+            spares = f" + {sp} spares per planting group" if sp else ""
+            self.total_lbl.setText(f"{n} pots{spares} / room for {cap}")
             self.total_lbl.setStyleSheet(f"font-weight:bold;color:{RED if n > cap else SLATE};")
         except dc.PlanError:
             self.total_lbl.setText("")
@@ -483,7 +488,9 @@ def summary_text(d: dc.Design) -> str:
     plan = d.plan
     c = d.counts()
     out = [f"{len(d.pots)} pots: {c[dc.MEASURED]} measured, {c[dc.SACRIFICIAL]} sacrificial, "
-           f"{c[dc.SPARE]} spare",
+           f"{c[dc.SPARE]} spare"
+           + (f" ({plan.spares_per_genotype_per_group} x {len(dc.genotypes(plan))} genotypes x "
+              f"{d.groups} planting groups)" if c[dc.SPARE] else ""),
            f"bench: {plan.tables} tables x {plan.zones_per_table} zones x "
            f"{plan.slots_per_zone} slots = {plan.capacity} places",
            "", f"PLANTING GROUPS: {d.groups}, {d.stagger_days} days apart"]

@@ -13,7 +13,9 @@ builds one row per pot, then:
      be run at the same time). Groups are at least 3 days apart by default: one group's
      24 h and 48 h N2O days, then the next group's flood. The split is random but
      balanced: every cell (genotype x cohort x treatment x role) is dealt across the
-     groups as evenly as it divides.
+     groups as evenly as it divides. Spares come after: `spares_per_genotype_per_group`
+     of every genotype in every group, because a spare can only replace a pot planted
+     the same day. They are never measured, so they never change the number of groups.
   2. BENCH LAYOUT. Pots are dealt across the available tables, then the zones of each
      table, keeping every cell, and every planting group, as evenly spread as it
      divides; slots within a zone are random (empty slots too). Position text is
@@ -83,7 +85,7 @@ class Plan:
     max_measured_per_day: int = 50
     min_stagger_days: int = DEFAULT_STAGGER_DAYS
     planting_groups: int = 0       # 0 = choose automatically
-    spares_per_genotype: int = 0
+    spares_per_genotype_per_group: int = 0   # a spare replaces a pot of its own age
     measure_hours: tuple[int, ...] = MEASURE_HOURS
     cohorts: list[Cohort] = field(default_factory=list)
     rows: list[PlanRow] = field(default_factory=list)
@@ -102,6 +104,8 @@ class Plan:
         d["measure_hours"] = tuple(d.get("measure_hours", MEASURE_HOURS))
         d["cohorts"] = [Cohort(**c) for c in d.get("cohorts", [])]
         d["rows"] = [PlanRow(**r) for r in d.get("rows", [])]
+        if "spares_per_genotype" in d:                 # v0.1/v0.2 plan files
+            d.setdefault("spares_per_genotype_per_group", d.pop("spares_per_genotype"))
         known = set(cls.__dataclass_fields__)
         return cls(**{k: v for k, v in d.items() if k in known})
 
@@ -170,18 +174,30 @@ def validate(plan: Plan) -> list[str]:
         if key in seen:
             p.append(f"row {i}: {key[0]} / {key[1]} / {key[2] or 'no treatment'} is listed twice")
         seen.add(key)
-    n = count_pots(plan)
+    if plan.spares_per_genotype_per_group < 0:
+        p.append("spares cannot be negative")
+    n = count_pots(plan)                               # spares are checked once groups are known
     if n > plan.capacity:
         p.append(f"{n} pots do not fit: {plan.tables} tables x {plan.zones_per_table} zones x "
                  f"{plan.slots_per_zone} slots = {plan.capacity}")
     return p
 
 
-def count_pots(plan: Plan) -> int:
+def genotypes(plan: Plan) -> list[str]:
+    out = []
+    for r in plan.rows:
+        g = r.genotype.strip()
+        if g and g not in out:
+            out.append(g)
+    return out
+
+
+def count_pots(plan: Plan, groups: int = 0) -> int:
+    """Measured + sacrificial pots, plus the spares for `groups` planting groups (0: the
+    spares are left out, the number of groups not being known yet)."""
     rows = [r for r in plan.rows if r.genotype.strip()]
-    genos = {r.genotype.strip() for r in rows}
     return (sum(max(0, r.reps) + max(0, r.sacrificial) for r in rows)
-            + plan.spares_per_genotype * len(genos))
+            + plan.spares_per_genotype_per_group * len(genotypes(plan)) * groups)
 
 
 # ======================================================================================
@@ -196,6 +212,7 @@ class Pot:
     treatment: str = ""
     rep: int = 0
     group: int = 0                 # planting group, 1-based
+    group_in_tag: bool = False     # spares, when there are several planting groups
     load: int = 0                  # N2O load within its group x cohort (measured pots)
     column: int = 0                # N2O column within the load
     seq: int = 0                   # order within its group x cohort: flood, N2O, harvest
@@ -213,33 +230,39 @@ class Pot:
 
     @property
     def label(self) -> str:
-        """Human tag: genotype-cohort-treatment-r03 / -SAC2 / SPARE-01."""
+        """Human tag: genotype-cohort-treatment-r03 / -SAC2 / SPARE-01 (G2-SPARE-01 when
+        there are several planting groups: a spare only replaces a pot of its own group)."""
         if self.role == SPARE:
-            return f"{self.genotype}-SPARE-{self.rep:02d}"
+            g = f"G{self.group}-" if self.group_in_tag else ""
+            return f"{self.genotype}-{g}SPARE-{self.rep:02d}"
         parts = [self.genotype, self.cohort] + ([self.treatment] if self.treatment else [])
         rep = f"r{self.rep:02d}" if self.role == MEASURED else f"SAC{self.rep}"
         return "-".join(parts + [rep])
 
 
 def make_pots(plan: Plan) -> list[Pot]:
+    """Measured and sacrificial pots; spares are added per group by add_spares()."""
     pots = []
-    genos = []
     for r in plan.rows:
         g = r.genotype.strip()
         if not g:
             continue
-        if g not in genos:
-            genos.append(g)
         for k in range(1, max(0, r.reps) + 1):
             pots.append(Pot(role=MEASURED, genotype=g, cohort=r.cohort,
                             treatment=r.treatment.strip(), rep=k))
         for k in range(1, max(0, r.sacrificial) + 1):
             pots.append(Pot(role=SACRIFICIAL, genotype=g, cohort=r.cohort,
                             treatment=r.treatment.strip(), rep=k))
-    for g in genos:
-        for k in range(1, plan.spares_per_genotype + 1):
-            pots.append(Pot(role=SPARE, genotype=g, rep=k))
     return pots
+
+
+def add_spares(plan: Plan, pots: list[Pot], groups: int) -> None:
+    """`spares_per_genotype_per_group` spares of every genotype in every planting group."""
+    for g in range(1, groups + 1):
+        for geno in genotypes(plan):
+            for k in range(1, plan.spares_per_genotype_per_group + 1):
+                pots.append(Pot(role=SPARE, genotype=geno, rep=k, group=g,
+                                group_in_tag=groups > 1))
 
 
 def _deal(pots: list[Pot], bins: list, rng: random.Random, key_extra=None,
@@ -498,6 +521,14 @@ def build(plan: Plan) -> Design:
     rng = random.Random(plan.seed)
     pots = make_pots(plan)
     groups, stagger, load, warnings = choose_groups(plan, pots, rng)
+    add_spares(plan, pots, groups)
+    if len(pots) > plan.capacity:
+        n_sp = len(pots) - count_pots(plan)
+        raise PlanError(
+            f"{len(pots)} pots do not fit: {count_pots(plan)} planned + {n_sp} spares "
+            f"({plan.spares_per_genotype_per_group} x {len(genotypes(plan))} genotypes x "
+            f"{groups} planting groups); the bench holds {plan.capacity}. Lower the spares "
+            f"or add tables, zones or slots.")
     place(plan, pots, rng)
     order_n2o(plan, pots, rng)
     # barcodes in random order, so a barcode says nothing about the pot's treatment

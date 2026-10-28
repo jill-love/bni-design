@@ -297,8 +297,8 @@ def _layout(wb, d: dc.Design) -> None:
             sw.fill = _fill(SPARE_BG)
         sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
         ws.cell(row=r, column=2, value=(
-            "Spare: no cohort or treatment yet" + ("" if by == "cohort" else
-                                                   "; fill = its planting group")))
+            "Spare: no cohort or treatment yet; replaces a failed pot of its own planting "
+            "group" + ("" if by == "cohort" else " (fill = that group)")))
         r += 1
     ws.cell(row=r, column=1, value="SAC").font = Font(bold=True, italic=True)
     ws.cell(row=r, column=1).alignment = CENTER
@@ -510,6 +510,7 @@ def _info(wb, d: dc.Design) -> None:
             ("tool version", dc.__version__), ("seed", plan.seed),
             ("pots", len(d.pots)), ("measured", c[dc.MEASURED]),
             ("sacrificial", c[dc.SACRIFICIAL]), ("spare", c[dc.SPARE]),
+            ("spares per genotype per planting group", plan.spares_per_genotype_per_group),
             ("tables", plan.tables), ("zones per table", plan.zones_per_table),
             ("slots per zone", plan.slots_per_zone), ("bench capacity", plan.capacity),
             ("planting groups", d.groups), ("days between groups", d.stagger_days),

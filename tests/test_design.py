@@ -22,7 +22,7 @@ def p0_plan(**kw):
     base = dict(name="B73-P0", seed=7, planting_date=MON, treatment_dap=14,
                 cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24), dc.Cohort("C", 27)],
                 rows=[dc.PlanRow("B73", c, t, 10, 3) for c in "ABC" for t in ("CTRL", "SN", "INH")],
-                spares_per_genotype=8)
+                spares_per_genotype_per_group=8)
     base.update(kw)
     return dc.Plan(**base)
 
@@ -49,6 +49,29 @@ def test_pot_counts_and_labels():
     assert all(p.barcode.startswith("B73-P0-S") for p in d.pots)
 
 
+def test_spares_per_genotype_per_planting_group():
+    d = dc.build(big_plan(spares_per_genotype_per_group=2))
+    assert d.groups == 3                                    # spares never change the groups
+    spares = Counter((p.genotype, p.group) for p in d.pots if p.role == dc.SPARE)
+    assert spares == {(g, k): 2 for g in ("B73", "Mo17", "W22") for k in (1, 2, 3)}
+    labels = {p.label for p in d.pots if p.role == dc.SPARE}
+    assert "Mo17-G3-SPARE-02" in labels and len(labels) == 18
+    one = dc.build(p0_plan())                               # one group: no G in the tag
+    assert {p.label for p in one.pots if p.role == dc.SPARE} == {
+        f"B73-SPARE-{k:02d}" for k in range(1, 9)}
+
+
+def test_spares_that_do_not_fit_say_why():
+    with pytest.raises(dc.PlanError, match="spares"):
+        dc.build(big_plan(spares_per_genotype_per_group=20))   # 252 + 180 > 360
+
+
+def test_old_plan_files_still_open():
+    d = big_plan().to_dict()
+    d.pop("spares_per_genotype_per_group"); d["spares_per_genotype"] = 4
+    assert dc.Plan.from_dict(d).spares_per_genotype_per_group == 4
+
+
 def test_barcodes_do_not_follow_the_treatment_order():
     d = dc.build(p0_plan())
     by_label = sorted(d.pots, key=lambda p: (p.cohort, p.treatment, p.role, p.rep))
@@ -65,7 +88,7 @@ def test_same_seed_same_design_other_seed_other_design():
 
 def test_blank_treatment_is_allowed():
     plan = p0_plan(rows=[dc.PlanRow("B73", "A", "", 6), dc.PlanRow("W22", "A", "", 6)],
-                   spares_per_genotype=0)
+                   spares_per_genotype_per_group=0)
     d = dc.build(plan)
     assert {p.label for p in d.pots} >= {"B73-A-r01", "W22-A-r06"}
 
