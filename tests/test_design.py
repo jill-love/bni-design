@@ -206,17 +206,16 @@ def test_events_follow_days_after_planting():
                   (p2 + dt.timedelta(22), "48 h N2O, harvest")]
 
 
-def test_watering_every_other_day_never_on_a_weekend():
+def test_watering_is_monday_wednesday_friday():
     mon = dc.water_days(MON, MON + dt.timedelta(days=18))
     assert [d.strftime("%a %d") for d in mon] == [
         "Wed 04", "Fri 06", "Mon 09", "Wed 11", "Fri 13", "Mon 16", "Wed 18"]
     tue = dc.water_days(MON + dt.timedelta(days=1), MON + dt.timedelta(days=18))
-    assert [d.strftime("%a %d") for d in tue][:3] == ["Thu 05", "Mon 09", "Wed 11"]
+    assert [d.strftime("%a %d") for d in tue][:3] == ["Wed 04", "Fri 06", "Mon 09"]
     for start in range(7):                                 # any planting weekday
         days = dc.water_days(MON + dt.timedelta(days=start), MON + dt.timedelta(days=40))
-        assert all(d.weekday() < 5 for d in days)
-        assert all((b - a).days >= 2 for a, b in zip(days, days[1:]))
-        assert all((b - a).days <= 4 for a, b in zip(days, days[1:]))   # Thu -> Mon at most
+        assert {d.strftime("%a") for d in days} == {"Mon", "Wed", "Fri"}
+        assert all(MON + dt.timedelta(days=start) < d < MON + dt.timedelta(days=40) for d in days)
 
 
 def test_weekend_events_are_allowed_but_not_weekend_water():

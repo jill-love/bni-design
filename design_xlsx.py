@@ -5,7 +5,7 @@ design_xlsx.py: write a Design (design_core.py) to an .xlsx workbook.
 Sheets
   timeline  the schedule as a day-by-day calendar, one column per planting group x cohort,
             in the style of the P0 design map. The yellow cells at the top (planting dates,
-            days between groups, treatment day, watering interval, first N2O day per
+            days between groups, treatment day, watering days, first N2O day per
             cohort, capacity) are inputs: every date in the calendar is a FORMULA on them,
             so editing one redraws the calendar when the workbook is opened in Excel. Two
             last columns count the pots flooded and measured each day; N2O above capacity,
@@ -113,7 +113,7 @@ def _timeline(wb, d: dc.Design) -> Refs:
     params = [("Planting date, group 1", plan.planting_date, "DD MMM YYYY"),
               ("Days between planting groups", d.stagger_days, "0"),
               ("Treatment (days after planting)", plan.treatment_dap, "0"),
-              ("Water every N days (never Sat/Sun)", dc.WATER_EVERY_DAYS, "0"),
+              ("Water on (day names)", dc.WATER_DAY_NAMES, "@"),
               ("Max N2O measurements per day", plan.max_measured_per_day, "0")]
     for i, (label, val, fmt) in enumerate(params):
         ws.cell(row=4 + i, column=1, value=label).font = BOLD
@@ -154,12 +154,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
     first_col = 3
     last_col = first_col + len(cols) - 1
     flood_col, n2o_col = last_col + 1, last_col + 2
-    help_col = {g: n2o_col + 2 + i for i, g in enumerate(range(1, d.groups + 1))}
     _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}" for g, c in cols]
             + ["Flood pots", "N2O pots"])
-    for g, hc in help_col.items():                       # watering helper: days since water
-        h = ws.cell(row=hdr, column=hc, value=f"G{g} days since water")
-        h.font = NOTE; h.alignment = CENTER
     n_row = hdr + 1                                     # measured pots per column (helper)
     ws.cell(row=n_row, column=1, value="measured pots").font = NOTE
     for j, (g, c) in enumerate(cols):
@@ -177,17 +173,11 @@ def _timeline(wb, d: dc.Design) -> Refs:
                     value=f"=MIN($F${top + 1}:$F${top + d.groups})" if i == 0 else f"=A{r - 1}+1")
         a.number_format = "D MMM YYYY"; a.border = BOX
         b = ws.cell(row=r, column=2, value=f'=TEXT(A{r},"ddd")'); b.border = BOX
-        for g, hc in help_col.items():
-            pr = f"$F${grp_row[g]}"
-            prev = f"{L(hc)}{r - 1}"
-            f = (f"=IF($A{r}<={pr},0,1)" if i == 0 else
-                 f"=IF($A{r}<={pr},0,IF(AND(WEEKDAY($A{r},2)<=5,{prev}+1>={WATER}),0,{prev}+1))")
-            hcell = ws.cell(row=r, column=hc, value=f)
-            hcell.font = NOTE; hcell.alignment = CENTER
         for j, (g, c) in enumerate(cols):
             pr = f"$F${grp_row[g]}"
             n2o = f"$B${coh_row[c.name]}"
-            watered = f"AND($A{r}>{pr},$A{r}<{pr}+{n2o}-1,{L(help_col[g])}{r}=0)"
+            watered = (f'AND($A{r}>{pr},$A{r}<{pr}+{n2o}-1,'
+                       f'ISNUMBER(SEARCH(TEXT($A{r},"ddd"),{WATER})))')
             flood_txt = ("Sacrificial harvest, flood"
                          if any(p.role == dc.SACRIFICIAL and p.group == g and p.cohort == c.name
                                 for p in d.pots) else "Flood")
@@ -232,8 +222,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
     note_r = end + 2
     ws.cell(row=note_r, column=1, value=(
         "Flood pots / N2O pots turn red when N2O is above capacity or a flood falls on an N2O "
-        "day. The grey 'days since water' columns drive the every-other-day watering "
-        "(no Saturday or Sunday water; a weekend water day moves to Monday).")).font = NOTE
+        "day. Watering follows the day names in 'Water on' (e.g. Mon, Wed, Fri) between "
+        "planting and the flood.")).font = NOTE
 
     _widths(ws, (34, 14))
     for col in range(first_col, last_col + 1):
@@ -242,8 +232,6 @@ def _timeline(wb, d: dc.Design) -> Refs:
         ws.column_dimensions[L(col)].width = max(ws.column_dimensions[L(col)].width or 0, w)
     ws.column_dimensions[L(flood_col)].width = 10
     ws.column_dimensions[L(n2o_col)].width = 10
-    for hc in help_col.values():
-        ws.column_dimensions[L(hc)].width = 11
     ws.freeze_panes = ws.cell(row=start, column=first_col)
     return refs
 
@@ -529,7 +517,7 @@ def _info(wb, d: dc.Design) -> None:
             ("max N2O per day (capacity)", plan.max_measured_per_day),
             ("N2O after flood (h)", ", ".join(str(h) for h in plan.measure_hours)),
             ("N2O columns per load", dc.N2O_COLUMNS),
-            ("watering", f"every {dc.WATER_EVERY_DAYS} days, never Saturday or Sunday"),
+            ("watering", dc.WATER_DAY_NAMES),
             ("planting date, group 1", plan.planting_date.isoformat()),
             ("treatment DAP", plan.treatment_dap if plan.treatment_dap is not None else "none")]
     for k, v in rows:

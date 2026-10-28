@@ -170,7 +170,7 @@ class DesignWindow(QtWidgets.QMainWindow):
         sl.addRow("Planting groups", self.groups)
         note = QtWidgets.QLabel("Flood 24 h before the first N2O sample (never on an N2O day); "
                                 "N2O at 24 h and 48 h; harvest after the 48 h sample. Water "
-                                "every other day, never on Saturday or Sunday.")
+                                "Monday, Wednesday and Friday.")
         note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};")
         sl.addRow(note)
         left.addWidget(sched)

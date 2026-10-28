@@ -21,9 +21,8 @@ builds one row per pot, then:
   3. SCHEDULE. Per group and cohort: plant (DAP 0), treatment (treatment_dap), flood and
      sacrificial harvest (first N2O DAP - 1), N2O at each measure offset (24 h, 48 h),
      harvest after the last one. Daily N2O load is counted per calendar day. Watering is
-     every other day from planting until the flood, never on a weekend: a water day that
-     falls on Saturday or Sunday moves to Monday, and the count restarts from there.
-     Treatment, flood, N2O and harvest may fall on any day.
+     Monday, Wednesday and Friday, after planting until the flood. Treatment, flood, N2O
+     and harvest may fall on any day, weekends included.
   4. N2O ORDER. Per group and cohort the measured pots are put in loads of three (one
      pot per N2O column), each load mixing treatments and genotypes, with every cell
      spread over the three columns. The flood is done in the same order, so every pot
@@ -47,7 +46,8 @@ MAX_SLOTS = 25
 MEASURE_HOURS = (24, 48)   # N2O after the flood; the last one is followed by harvest
 MAX_STAGGER_DAYS = 30      # search limit for the gap between planting groups
 DEFAULT_STAGGER_DAYS = 3   # 24 h N2O, 48 h N2O, then the next group's flood
-WATER_EVERY_DAYS = 2       # every other day; never Saturday or Sunday
+WATER_WEEKDAYS = (0, 2, 4)  # Monday, Wednesday, Friday (date.weekday())
+WATER_DAY_NAMES = "Mon, Wed, Fri"
 N2O_COLUMNS = 3            # pots per N2O load (one per chamber)
 
 MEASURED, SACRIFICIAL, SPARE = "MEASURED", "SACRIFICIAL", "SPARE"
@@ -420,17 +420,15 @@ def order_n2o(plan: Plan, pots: list[Pot], rng: random.Random) -> None:
 # ======================================================================================
 # 4. WATERING
 # ======================================================================================
-def water_days(planted: dt.date, until: dt.date) -> list[dt.date]:
-    """Every other day after planting, strictly before `until` (the flood), never on a
-    weekend: a water day that falls on Saturday or Sunday moves to Monday and the count
-    restarts from there. Planting day counts as watered."""
+def water_days(planted: dt.date, until: dt.date,
+               weekdays: tuple[int, ...] = WATER_WEEKDAYS) -> list[dt.date]:
+    """Every Monday, Wednesday and Friday after planting, strictly before `until` (the
+    flood). Planting day itself is not counted."""
     out = []
-    last = planted
     day = planted + dt.timedelta(days=1)
     while day < until:
-        if day.weekday() < 5 and (day - last).days >= WATER_EVERY_DAYS:
+        if day.weekday() in weekdays:
             out.append(day)
-            last = day
         day += dt.timedelta(days=1)
     return out
 

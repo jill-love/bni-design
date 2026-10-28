@@ -12,7 +12,7 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
    | Event | When |
    |---|---|
    | Plant | DAP 0 |
-   | Water | every other day until the flood, **never Saturday or Sunday**: a weekend water day moves to Monday |
+   | Water | **Monday, Wednesday and Friday**, from planting until the flood |
    | Treatment | on its DAP |
    | Sacrificial harvest and flood | the day before the first N2O sample |
    | N2O | 24 h and 48 h after the flood |
@@ -28,7 +28,7 @@ The same random seed always gives the same design.
 
 | Sheet | What it holds |
 |---|---|
-| `timeline` | A day-by-day calendar, one column per planting group x cohort. **The yellow cells are inputs**: planting date, days between groups, treatment day, watering interval, first N2O day per cohort, each group's planting date, and capacity. Edit one in Excel and the calendar redraws. *Flood pots* and *N2O pots* count each day, and turn red if N2O is over capacity or a flood lands on an N2O day. |
+| `timeline` | A day-by-day calendar, one column per planting group x cohort. **The yellow cells are inputs**: planting date, days between groups, treatment day, watering days (`Mon, Wed, Fri`), first N2O day per cohort, each group's planting date, and capacity. Edit one in Excel and the calendar redraws. *Flood pots* and *N2O pots* count each day, and turn red if N2O is over capacity or a flood lands on an N2O day. |
 | `design` | One row per pot: barcode, role, genotype, cohort, treatment, rep, planting group, planting date (linked to the timeline), table, zone, slot, position, tag. |
 | `layout` | Each table as a zone x slot grid, in bright colours by planting group (by cohort when there is one group), with a legend. Sacrificial tags are italic. |
 | `flood_*` | Per cohort (and planting group): the sacrificial harvest, then the flood in N2O order, with columns to fill in. |
