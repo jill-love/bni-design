@@ -1,0 +1,11 @@
+# Environments and caches
+.venv/
+venv/
+__pycache__/
+*.py[co]
+.pytest_cache/
+# Generated designs and saved plans stay with the experiment, not in Git
+*.xlsx
+*_plan.json
+~$*
+Thumbs.db
