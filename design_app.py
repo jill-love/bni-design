@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-design_app.py: BNI experiment setup window (v0.1, 2026-10-28).
+design_app.py: BNI experiment setup window (v0.2, 2026-10-28).
 
     python design_app.py
 
@@ -37,7 +37,7 @@ def example_plan() -> dc.Plan:
     return dc.Plan(
         name="BNI-P1", seed=dt.date.today().toordinal() % 100000,
         planting_date=dt.date.today() + dt.timedelta(days=7), treatment_dap=14,
-        cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 23), dc.Cohort("C", 25)],
+        cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24), dc.Cohort("C", 27)],
         rows=[dc.PlanRow("B73", c, t, 10, 3) for c in "ABC" for t in ("CTRL", "SN", "INH")])
 
 
@@ -161,14 +161,16 @@ class DesignWindow(QtWidgets.QMainWindow):
         sl.addRow("Max N2O measurements / day", self.cap)
         self.min_gap = QtWidgets.QSpinBox(); self.min_gap.setRange(2, dc.MAX_STAGGER_DAYS)
         self.min_gap.setSuffix(" days")
-        self.min_gap.setToolTip("Shortest gap between planting groups. 2 keeps one group's "
-                                "24 h and 48 h days clear of the next group's.")
+        self.min_gap.setToolTip("Shortest gap between planting groups. 3 (the default) gives "
+                                "one group's 24 h and 48 h N2O days, then the next group's "
+                                "flood: a flood and N2O are never on the same day.")
         sl.addRow("Min. gap between groups", self.min_gap)
         self.groups = QtWidgets.QSpinBox(); self.groups.setRange(0, 50)
         self.groups.setSpecialValueText("Auto (fewest that fit)")
         sl.addRow("Planting groups", self.groups)
-        note = QtWidgets.QLabel("Flood 24 h before the first N2O sample; N2O at 24 h and 48 h; "
-                                "harvest after the 48 h sample.")
+        note = QtWidgets.QLabel("Flood 24 h before the first N2O sample (never on an N2O day); "
+                                "N2O at 24 h and 48 h; harvest after the 48 h sample. Water "
+                                "every other day, never on Saturday or Sunday.")
         note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};")
         sl.addRow(note)
         left.addWidget(sched)
@@ -356,7 +358,7 @@ class DesignWindow(QtWidgets.QMainWindow):
         last = self.cohorts.text(r - 1, 1) if r else ""
         name = chr(ord("A") + r) if r < 26 else f"C{r + 1}"
         self.cohorts.set_text(r, 0, name)
-        self.cohorts.set_text(r, 1, int(last) + 2 if last.isdigit() else 21)
+        self.cohorts.set_text(r, 1, int(last) + 3 if last.isdigit() else 21)
 
     def _remove_rows(self, tbl):
         rows = sorted({i.row() for i in tbl.selectedIndexes()}, reverse=True)

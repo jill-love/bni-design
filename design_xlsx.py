@@ -5,13 +5,22 @@ design_xlsx.py: write a Design (design_core.py) to an .xlsx workbook.
 Sheets
   timeline  the schedule as a day-by-day calendar, one column per planting group x cohort,
             in the style of the P0 design map. The yellow cells at the top (planting dates,
-            days between groups, treatment day, first N2O day per cohort, capacity) are
-            inputs: every date in the calendar is a FORMULA on them, so editing one redraws
-            the calendar when the workbook is opened in Excel. The last column counts the
-            N2O measurements each day and turns red above capacity.
+            days between groups, treatment day, watering interval, first N2O day per
+            cohort, capacity) are inputs: every date in the calendar is a FORMULA on them,
+            so editing one redraws the calendar when the workbook is opened in Excel. Two
+            last columns count the pots flooded and measured each day; N2O above capacity,
+            or a flood on an N2O day, turns them red.
   design    one row per pot: barcode, role, genotype, cohort, treatment, rep, planting
-            group, planting date (linked to the timeline), table, zone, slot, position, tag.
-  layout    each table as a zone x slot grid: tag and barcode per cell.
+            group, planting date (linked to the timeline), table, zone, slot, position,
+            N2O load / column / seq, tag.
+  layout    each table as a zone x slot grid (tag and barcode per cell), coloured by
+            planting group (by cohort when there is only one group), with a legend.
+  flood_*   per group x cohort: the sacrificial harvest, then the flood in N2O order.
+  measure_* per group x cohort: one block per N2O time (24 h, 48 h) in load order.
+  harvest_* per group x cohort: the measured pots after the last N2O time.
+            (* = the cohort, or G<group>_<cohort> when there are several planting groups.)
+            Their dates are formulas on the timeline too.
+  tags      barcode, tag text and position for label printing, by planting group.
   groups    planting groups: date, pots, measured pots per cohort; N2O load per day.
   jars      barcode + tag (tag ends with the Tn-Zn-nn position): the sheet the dosing
             station's provisioning reads (add its `admin` sheet before provisioning).
@@ -20,6 +29,7 @@ Sheets
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
@@ -34,16 +44,20 @@ FLOOD_BG, FLOOD_FG = "4A86E8", "FFFFFF"
 N2O_BG = "DBEAFE"
 PLANT_BG = "DCFCE7"
 TREAT_BG = "FDE68A"
+WATER_BG = "F0F9FF"
 WEEKEND_BG = "F8D9BE"
 OVER_BG = "FCA5A5"
-GROUP_TINTS = ("FFFFFF", "F1F5F9", "ECFDF5", "FEF3C7", "EDE9FE", "FCE7F3", "E0F2FE", "FEF2F2")
+SPARE_BG = "D1D5DB"
+# layout colours: bright enough to tell apart across a bench
+BRIGHT = ("60A5FA", "4ADE80", "FACC15", "F87171", "C084FC", "F472B6", "22D3EE", "FB923C",
+          "A3E635", "2DD4BF", "818CF8", "FDA4AF")
 
 BOLD = Font(bold=True)
 HEAD = Font(bold=True, color="FFFFFF")
+NOTE = Font(italic=True, color="6B7280")
 THIN = Side(style="thin", color="D1D5DB")
 BOX = Border(left=THIN, right=THIN, top=THIN, bottom=THIN)
 CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
-WRAP = Alignment(vertical="top", wrap_text=True)
 
 
 def _fill(hex_):
@@ -60,35 +74,60 @@ def _input(cell):
     cell.fill = _fill(INPUT_BG); cell.border = BOX
 
 
+def _widths(ws, widths, first=1):
+    for i, w in enumerate(widths):
+        ws.column_dimensions[L(first + i)].width = w
+
+
+def _sheet_tag(d: dc.Design, g: int, cohort: str) -> str:
+    c = re.sub(r"[^A-Za-z0-9]+", "", cohort) or "X"
+    return c if d.groups == 1 else f"G{g}_{c}"
+
+
+class Refs:
+    """Absolute references to the timeline's input cells, for formulas elsewhere."""
+    def __init__(self):
+        self.plant = {}            # group -> planting date cell
+        self.n2o = {}              # cohort -> first N2O DAP cell
+
+    def flood_date(self, g, c):
+        return f"{self.plant[g]}+{self.n2o[c]}-1"
+
+    def n2o_date(self, g, c, off):
+        return f"{self.plant[g]}+{self.n2o[c]}+{off}"
+
+
 # ======================================================================================
 # TIMELINE
 # ======================================================================================
-def _timeline(wb, d: dc.Design) -> dict:
-    """Returns {group: absolute ref of its planting-date cell} for the design sheet."""
+def _timeline(wb, d: dc.Design) -> Refs:
     plan = d.plan
+    refs = Refs()
     ws = wb.create_sheet("timeline")
     ws["A1"] = f"{plan.name}: timeline"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = ("Yellow cells are inputs: change a date or a day count and the calendar below "
                 "follows. Days are days after planting (DAP) of each pot's planting group.")
-    ws["A2"].font = Font(italic=True, color="6B7280")
+    ws["A2"].font = NOTE
 
     params = [("Planting date, group 1", plan.planting_date, "DD MMM YYYY"),
               ("Days between planting groups", d.stagger_days, "0"),
               ("Treatment (days after planting)", plan.treatment_dap, "0"),
+              ("Water every N days (never Sat/Sun)", dc.WATER_EVERY_DAYS, "0"),
               ("Max N2O measurements per day", plan.max_measured_per_day, "0")]
     for i, (label, val, fmt) in enumerate(params):
         ws.cell(row=4 + i, column=1, value=label).font = BOLD
         c = ws.cell(row=4 + i, column=2, value=val)
         c.number_format = fmt; _input(c)
-    P1, GAP, TREAT, CAP = "$B$4", "$B$5", "$B$6", "$B$7"
+    P1, GAP, TREAT, WATER, CAP = "$B$4", "$B$5", "$B$6", "$B$7", "$B$8"
 
-    top = 9
+    top = 10
     _header(ws, top, ["Cohort", "First N2O (DAP)", "Flood (DAP)"])
     coh_row = {}
     for i, c in enumerate(plan.cohorts):
         r = top + 1 + i
         coh_row[c.name] = r
+        refs.n2o[c.name] = f"timeline!$B${r}"
         ws.cell(row=r, column=1, value=c.name).font = BOLD
         _input(ws.cell(row=r, column=2, value=c.first_n2o_dap))
         ws.cell(row=r, column=3, value=f"=B{r}-1").border = BOX
@@ -98,6 +137,7 @@ def _timeline(wb, d: dc.Design) -> dict:
     for g in range(1, d.groups + 1):
         r = top + g
         grp_row[g] = r
+        refs.plant[g] = f"timeline!$F${r}"
         ws.cell(row=r, column=5, value=g).font = BOLD
         c = ws.cell(row=r, column=6, value=f"={P1}+({g}-1)*{GAP}")
         c.number_format = "DD MMM YYYY"; _input(c)
@@ -106,103 +146,137 @@ def _timeline(wb, d: dc.Design) -> dict:
                                            for p in d.pots)).border = BOX
     ws.cell(row=top + d.groups + 1, column=5,
             value="(a planting date may be typed over; the others keep following group 1)"
-            ).font = Font(italic=True, color="6B7280")
+            ).font = NOTE
 
     # ---- the calendar ----
     hdr = max(top + len(plan.cohorts), top + d.groups + 1) + 3
     cols = [(g, c) for g in range(1, d.groups + 1) for c in plan.cohorts]
     first_col = 3
+    last_col = first_col + len(cols) - 1
+    flood_col, n2o_col = last_col + 1, last_col + 2
+    help_col = {g: n2o_col + 2 + i for i, g in enumerate(range(1, d.groups + 1))}
     _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}" for g, c in cols]
-            + ["N2O pots"])
+            + ["Flood pots", "N2O pots"])
+    for g, hc in help_col.items():                       # watering helper: days since water
+        h = ws.cell(row=hdr, column=hc, value=f"G{g} days since water")
+        h.font = NOTE; h.alignment = CENTER
     n_row = hdr + 1                                     # measured pots per column (helper)
-    ws.cell(row=n_row, column=1, value="measured pots").font = Font(italic=True, color="6B7280")
+    ws.cell(row=n_row, column=1, value="measured pots").font = NOTE
     for j, (g, c) in enumerate(cols):
         n = sum(p.group == g and p.cohort == c.name and p.role == dc.MEASURED for p in d.pots)
         cell = ws.cell(row=n_row, column=first_col + j, value=n)
-        cell.alignment = CENTER; cell.font = Font(italic=True, color="6B7280")
+        cell.alignment = CENTER; cell.font = NOTE
 
     span_end = max(ev for g, c in cols for ev, _ in d.events(g, c))
     n_days = (span_end - plan.planting_date).days + 1 + 14          # room to move dates later
     start = hdr + 2
-    last_col = first_col + len(cols) - 1
-    tot_col = last_col + 1
+    helper = f"{L(first_col)}${n_row}:{L(last_col)}${n_row}"
     for i in range(n_days):
         r = start + i
         a = ws.cell(row=r, column=1,
                     value=f"=MIN($F${top + 1}:$F${top + d.groups})" if i == 0 else f"=A{r - 1}+1")
         a.number_format = "D MMM YYYY"; a.border = BOX
         b = ws.cell(row=r, column=2, value=f'=TEXT(A{r},"ddd")'); b.border = BOX
+        for g, hc in help_col.items():
+            pr = f"$F${grp_row[g]}"
+            prev = f"{L(hc)}{r - 1}"
+            f = (f"=IF($A{r}<={pr},0,1)" if i == 0 else
+                 f"=IF($A{r}<={pr},0,IF(AND(WEEKDAY($A{r},2)<=5,{prev}+1>={WATER}),0,{prev}+1))")
+            hcell = ws.cell(row=r, column=hc, value=f)
+            hcell.font = NOTE; hcell.alignment = CENTER
         for j, (g, c) in enumerate(cols):
             pr = f"$F${grp_row[g]}"
             n2o = f"$B${coh_row[c.name]}"
+            watered = f"AND($A{r}>{pr},$A{r}<{pr}+{n2o}-1,{L(help_col[g])}{r}=0)"
             flood_txt = ("Sacrificial harvest, flood"
                          if any(p.role == dc.SACRIFICIAL and p.group == g and p.cohort == c.name
                                 for p in d.pots) else "Flood")
-            # innermost first: water between planting and flood, else blank
-            f = (f'IF(AND($A{r}>{pr},$A{r}<{pr}+{n2o}-1),'
-                 f'IF(WEEKDAY($A{r},2)>5,"Water (weekend)","Water"),"")')
+            f = f'IF({watered},"Water","")'               # innermost: watering, else blank
             offs = plan.measure_offsets
             for h, off in reversed(list(zip(plan.measure_hours, offs))):
                 txt = f"{h} h N2O" + (", harvest" if off == offs[-1] else "")
                 f = f'IF($A{r}={pr}+{n2o}+{off},"{txt}",{f})'
             f = f'IF($A{r}={pr}+{n2o}-1,"{flood_txt}",{f})'
-            f = f'IF(IF({TREAT}="",FALSE,$A{r}={pr}+{TREAT}),"Treatment; water",{f})'
+            f = (f'IF(IF({TREAT}="",FALSE,$A{r}={pr}+{TREAT}),'
+                 f'IF({watered},"Treatment; water","Treatment"),{f})')
             f = f'=IF($A{r}={pr},"Plant",{f})'
             cell = ws.cell(row=r, column=first_col + j, value=f)
             cell.border = BOX; cell.alignment = Alignment(vertical="center")
         rng = f"{L(first_col)}{r}:{L(last_col)}{r}"
-        helper = f"{L(first_col)}${n_row}:{L(last_col)}${n_row}"
-        t = ws.cell(row=r, column=tot_col,
-                    value=f'=SUMPRODUCT(ISNUMBER(SEARCH("N2O",{rng}))*{helper})')
-        t.border = BOX; t.alignment = CENTER; t.font = BOLD
+        for col, word in ((flood_col, "flood"), (n2o_col, "N2O")):
+            t = ws.cell(row=r, column=col,
+                        value=f'=SUMPRODUCT(ISNUMBER(SEARCH("{word}",{rng}))*{helper})')
+            t.border = BOX; t.alignment = CENTER; t.font = BOLD
 
     end = start + n_days - 1
     grid = f"{L(first_col)}{start}:{L(last_col)}{end}"
     tl = f"{L(first_col)}{start}"
     for word, bg, fg in (("flood", FLOOD_BG, FLOOD_FG), ("N2O", N2O_BG, None),
                          ("Plant", PLANT_BG, None), ("Treatment", TREAT_BG, None),
-                         ("weekend", INPUT_BG, None)):
+                         ("Water", WATER_BG, None)):
         ws.conditional_formatting.add(grid, FormulaRule(
             formula=[f'ISNUMBER(SEARCH("{word}",{tl}))'], fill=_fill(bg),
             font=Font(bold=True, color=fg) if fg else None, stopIfTrue=True))
     ws.conditional_formatting.add(f"A{start}:B{end}", FormulaRule(
         formula=[f"WEEKDAY($A{start},2)>5"], fill=_fill(WEEKEND_BG)))
-    tot = f"{L(tot_col)}{start}:{L(tot_col)}{end}"
-    ws.conditional_formatting.add(tot, FormulaRule(
-        formula=[f"{L(tot_col)}{start}>{CAP}"], fill=_fill(OVER_BG), font=Font(bold=True)))
-    ws.conditional_formatting.add(tot, FormulaRule(
-        formula=[f"{L(tot_col)}{start}=0"], font=Font(color="D1D5DB")))
+    fl, nc = f"{L(flood_col)}{start}", f"{L(n2o_col)}{start}"
+    both = f"{L(flood_col)}{start}:{L(n2o_col)}{end}"
+    ws.conditional_formatting.add(both, FormulaRule(            # a flood on an N2O day
+        formula=[f"AND(${L(flood_col)}{start}>0,${L(n2o_col)}{start}>0)"],
+        fill=_fill(OVER_BG), font=Font(bold=True), stopIfTrue=True))
+    ws.conditional_formatting.add(f"{L(n2o_col)}{start}:{L(n2o_col)}{end}", FormulaRule(
+        formula=[f"{nc}>{CAP}"], fill=_fill(OVER_BG), font=Font(bold=True), stopIfTrue=True))
+    ws.conditional_formatting.add(both, FormulaRule(
+        formula=[f"{fl}=0"], font=Font(color="D1D5DB")))
 
-    ws.column_dimensions["A"].width = 30
-    ws.column_dimensions["B"].width = 14
-    for col in range(first_col, tot_col):
+    note_r = end + 2
+    ws.cell(row=note_r, column=1, value=(
+        "Flood pots / N2O pots turn red when N2O is above capacity or a flood falls on an N2O "
+        "day. The grey 'days since water' columns drive the every-other-day watering "
+        "(no Saturday or Sunday water; a weekend water day moves to Monday).")).font = NOTE
+
+    _widths(ws, (34, 14))
+    for col in range(first_col, last_col + 1):
         ws.column_dimensions[L(col)].width = 26
     for col, w in ((5, 15), (6, 14), (7, 8), (8, 10)):
         ws.column_dimensions[L(col)].width = max(ws.column_dimensions[L(col)].width or 0, w)
-    ws.column_dimensions[L(tot_col)].width = 10
+    ws.column_dimensions[L(flood_col)].width = 10
+    ws.column_dimensions[L(n2o_col)].width = 10
+    for hc in help_col.values():
+        ws.column_dimensions[L(hc)].width = 11
     ws.freeze_panes = ws.cell(row=start, column=first_col)
-    return {g: f"timeline!$F${r}" for g, r in grp_row.items()}
+    return refs
 
 
 # ======================================================================================
-# THE OTHER SHEETS
+# DESIGN, LAYOUT
 # ======================================================================================
-def _design(wb, d: dc.Design, plant_ref: dict) -> None:
+def _design(wb, d: dc.Design, refs: Refs) -> None:
     ws = wb.create_sheet("design")
     cols = ["barcode", "role", "genotype", "cohort", "treatment", "rep", "planting_group",
-            "planting_date", "table", "zone", "slot", "position", "tag"]
+            "planting_date", "table", "zone", "slot", "position", "n2o_load", "n2o_column",
+            "seq", "tag"]
     _header(ws, 1, cols)
     for r, p in enumerate(d.pots, 2):
+        meas = p.role == dc.MEASURED
         vals = [p.barcode, p.role, p.genotype, p.cohort or None, p.treatment or None, p.rep,
-                p.group, f"={plant_ref[p.group]}", p.table, p.zone, p.slot, p.position, p.label]
+                p.group, f"={refs.plant[p.group]}", p.table, p.zone, p.slot, p.position,
+                p.load if meas else None, p.column if meas else None, p.seq or None, p.label]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         ws.cell(row=r, column=1).number_format = "@"
         ws.cell(row=r, column=8).number_format = "DD MMM YYYY"
-    for c, w in zip(range(1, 14), (16, 13, 12, 8, 11, 6, 9, 13, 6, 6, 6, 11, 24)):
-        ws.column_dimensions[L(c)].width = w
+    _widths(ws, (16, 13, 12, 8, 11, 6, 9, 13, 6, 6, 6, 11, 9, 10, 6, 24))
     ws.freeze_panes = "B2"
     ws.auto_filter.ref = f"A1:{L(len(cols))}{len(d.pots) + 1}"
+
+
+def layout_colours(d: dc.Design) -> tuple[str, dict]:
+    """('group' | 'cohort', {key: hex}). By planting group when there are several (that is
+    what is planted together), else by cohort (what is flooded and measured together)."""
+    if d.groups > 1:
+        return "group", {g: BRIGHT[(g - 1) % len(BRIGHT)] for g in range(1, d.groups + 1)}
+    return "cohort", {c.name: BRIGHT[i % len(BRIGHT)] for i, c in enumerate(d.plan.cohorts)}
 
 
 def _layout(wb, d: dc.Design) -> None:
@@ -210,10 +284,44 @@ def _layout(wb, d: dc.Design) -> None:
     ws = wb.create_sheet("layout")
     ws["A1"] = (f"Bench layout: {plan.tables} tables x {plan.zones_per_table} zones x "
                 f"{plan.slots_per_zone} slots. Zone 1 at the taped end; slots count from the "
-                f"left. Cell: tag / barcode; the fill shows the planting group.")
-    ws["A1"].font = Font(italic=True, color="6B7280")
+                f"left. Cell: tag / barcode.")
+    ws["A1"].font = NOTE
+    by, colours = layout_colours(d)
+
+    # ---- legend ----
+    ws["A3"] = f"Colour = {'planting group' if by == 'group' else 'cohort'}"
+    ws["A3"].font = BOLD
+    r = 4
+    for key, hex_ in colours.items():
+        if by == "group":
+            n = sum(p.group == key for p in d.pots)
+            text = f"Planting group {key}: planted {d.group_planting(key):%a %d %b %Y}, {n} pots"
+        else:
+            n = sum(p.cohort == key for p in d.pots)
+            text = f"Cohort {key}: {n} pots"
+        sw = ws.cell(row=r, column=1, value=f"G{key}" if by == "group" else key)
+        sw.fill = _fill(hex_); sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
+        ws.cell(row=r, column=2, value=text)
+        r += 1
+    if any(p.role == dc.SPARE for p in d.pots):
+        sw = ws.cell(row=r, column=1, value="SPARE")
+        if by == "cohort":
+            sw.fill = _fill(SPARE_BG)
+        sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
+        ws.cell(row=r, column=2, value=(
+            "Spare: no cohort or treatment yet" + ("" if by == "cohort" else
+                                                   "; fill = its planting group")))
+        r += 1
+    ws.cell(row=r, column=1, value="SAC").font = Font(bold=True, italic=True)
+    ws.cell(row=r, column=1).alignment = CENTER
+    ws.cell(row=r, column=2, value="italic tag ending SACn: sacrificial, harvested on flood day")
+    r += 1
+    sw = ws.cell(row=r, column=1, value="(empty)")
+    sw.font = Font(color="9CA3AF"); sw.alignment = CENTER; sw.border = BOX
+    ws.cell(row=r, column=2, value="empty slot")
+    r += 3
+
     at = {(p.table, p.zone, p.slot): p for p in d.pots}
-    r = 3
     for t in range(1, plan.tables + 1):
         n = sum(p.table == t for p in d.pots)
         _header(ws, r, [f"Table {t} ({n} pots)"]
@@ -226,18 +334,150 @@ def _layout(wb, d: dc.Design) -> None:
                 c = ws.cell(row=r, column=1 + s,
                             value=f"{p.label}\n{p.barcode}" if p else "(empty)")
                 c.alignment = CENTER; c.border = BOX
-                if p:
-                    c.fill = _fill(GROUP_TINTS[(p.group - 1) % len(GROUP_TINTS)])
-                else:
+                if p is None:
                     c.font = Font(color="9CA3AF")
+                    continue
+                key = p.group if by == "group" else p.cohort
+                c.fill = _fill(colours.get(key, SPARE_BG))
+                if p.role == dc.SACRIFICIAL:
+                    c.font = Font(italic=True)
             ws.row_dimensions[r].height = 32
         r += 3
     ws.column_dimensions["A"].width = 18
     for s in range(1, plan.slots_per_zone + 1):
         ws.column_dimensions[L(1 + s)].width = 19
+    ws.column_dimensions["B"].width = max(ws.column_dimensions["B"].width, 19)
 
 
-def _groups(wb, d: dc.Design, plant_ref: dict) -> None:
+# ======================================================================================
+# FLOOD / MEASURE / HARVEST, per planting group x cohort
+# ======================================================================================
+def _dated(ws, row, label, formula):
+    ws.cell(row=row, column=1, value=label).font = BOLD
+    c = ws.cell(row=row, column=2, value=f"={formula}")
+    c.number_format = "ddd D MMM YYYY"; c.font = BOLD
+
+
+def _cohort_sheets(wb, d: dc.Design, refs: Refs) -> None:
+    plan = d.plan
+    for g in range(1, d.groups + 1):
+        for c in plan.cohorts:
+            tag = _sheet_tag(d, g, c.name)
+            who = f"Cohort {c.name}" + (f", planting group {g}" if d.groups > 1 else "")
+            meas = sorted((p for p in d.pots if p.group == g and p.cohort == c.name
+                           and p.role == dc.MEASURED), key=lambda p: p.seq)
+            sac = sorted((p for p in d.pots if p.group == g and p.cohort == c.name
+                          and p.role == dc.SACRIFICIAL), key=lambda p: p.seq)
+
+            # ---- flood ----
+            ws = wb.create_sheet(f"flood_{tag}")
+            ws["A1"] = (f"{who}: flood morning. "
+                        + (f"1) harvest the {len(sac)} sacrificial pots, 2) flood the "
+                           f"{len(meas)} measured pots in this order." if sac else
+                           f"Flood the {len(meas)} measured pots in this order."))
+            ws["A1"].font = Font(bold=True, size=12)
+            _dated(ws, 2, "Date", refs.flood_date(g, c.name))
+            r = 4
+            if sac:
+                _header(ws, r, ["SACRIFICIAL harvest first", "barcode", "position", "genotype",
+                                "treatment", "fresh shoot g", "fresh root g", "soil depth cm",
+                                "KCl tube", "done"])
+                for p in sac:
+                    r += 1
+                    for j, v in enumerate((p.label, p.barcode, p.position, p.genotype,
+                                           p.treatment or None)):
+                        ws.cell(row=r, column=1 + j, value=v)
+                    for j in range(5, 10):
+                        ws.cell(row=r, column=1 + j).border = BOX
+                r += 2
+            _header(ws, r, ["FLOOD in this order", "barcode", "position", "genotype",
+                            "treatment", "mass before g", "flood pass 1 time",
+                            "flood pass 2 time", "achieved g", "flag"])
+            for p in meas:
+                r += 1
+                for j, v in enumerate((f"{p.seq:02d} (load {p.load}, col {p.column})",
+                                       p.barcode, p.position, p.genotype, p.treatment or None)):
+                    ws.cell(row=r, column=1 + j, value=v)
+                for j in range(5, 10):
+                    ws.cell(row=r, column=1 + j).border = BOX
+            _widths(ws, (26, 15, 11, 11, 11, 13, 15, 15, 11, 9))
+            ws.freeze_panes = "A4"
+
+            # ---- measure: one block per N2O time ----
+            ws = wb.create_sheet(f"measure_{tag}")
+            ws["A1"] = (f"{who}: N2O measurement. Loads 1-{max((p.load for p in meas), default=0)}"
+                        f" in order, {dc.N2O_COLUMNS} pots per load (one per column); each load"
+                        f" mixes treatments and genotypes.")
+            ws["A1"].font = Font(bold=True, size=12)
+            r = 3
+            offs = plan.measure_offsets
+            for h, off in zip(plan.measure_hours, offs):
+                _dated(ws, r, f"{h} h N2O" + (", then harvest" if off == offs[-1] else ""),
+                       refs.n2o_date(g, c.name, off))
+                r += 1
+                for j, lab in enumerate(("chamber air T at Start (C):", None, "ambient kPa:",
+                                         None, "operator:", None, "k entered per column:")):
+                    if lab:
+                        ws.cell(row=r, column=1 + j, value=lab).font = NOTE
+                    else:
+                        ws.cell(row=r, column=1 + j).border = BOX
+                r += 1
+                _header(ws, r, ["load", "column", "seq", "barcode", "position", "genotype",
+                                "treatment", "rep", "top-up g", "mass at seat g", "seat time",
+                                "window ok?", "mass out g", "note"])
+                for p in meas:
+                    r += 1
+                    for j, v in enumerate((p.load, p.column, p.seq, p.barcode, p.position,
+                                           p.genotype, p.treatment or None, p.rep)):
+                        ws.cell(row=r, column=1 + j, value=v)
+                    for j in range(8, 14):
+                        ws.cell(row=r, column=1 + j).border = BOX
+                    if p.column == dc.N2O_COLUMNS or p is meas[-1]:
+                        for j in range(14):                 # rule under each load
+                            ws.cell(row=r, column=1 + j).border = Border(
+                                left=THIN, right=THIN, top=THIN,
+                                bottom=Side(style="medium", color="6B7280"))
+                r += 3
+            _widths(ws, (26, 7, 6, 15, 11, 11, 11, 6, 9, 13, 10, 11, 11, 20))
+
+            # ---- harvest ----
+            ws = wb.create_sheet(f"harvest_{tag}")
+            ws["A1"] = f"{who}: harvest after the {plan.measure_hours[-1]} h N2O"
+            ws["A1"].font = Font(bold=True, size=12)
+            _dated(ws, 2, "Date", refs.n2o_date(g, c.name, offs[-1]))
+            _header(ws, 4, ["seq", "barcode", "position", "genotype", "treatment", "rep",
+                            "fresh shoot weight (g)", "DRY shoot weight (g)",
+                            "fresh root weight (g)", "DRY root weight (g)", "KCl tube?"])
+            for i, p in enumerate(meas, 5):
+                for j, v in enumerate((p.seq, p.barcode, p.position, p.genotype,
+                                       p.treatment or None, p.rep)):
+                    ws.cell(row=i, column=1 + j, value=v)
+                for j in range(6, 11):
+                    ws.cell(row=i, column=1 + j).border = BOX
+            _widths(ws, (8, 15, 11, 11, 11, 6, 15, 15, 15, 15, 10))
+            ws.freeze_panes = "A5"
+
+
+# ======================================================================================
+# TAGS, GROUPS, JARS, INFO
+# ======================================================================================
+def _tags(wb, d: dc.Design, refs: Refs) -> None:
+    ws = wb.create_sheet("tags")
+    _header(ws, 1, ["barcode", "tag_text", "position", "planting_group", "planting_date",
+                    "role", "genotype", "cohort", "treatment"])
+    for r, p in enumerate(sorted(d.pots, key=lambda p: (p.group, p.barcode)), 2):
+        for j, v in enumerate((p.barcode, p.label, p.position, p.group,
+                               f"={refs.plant[p.group]}", p.role, p.genotype,
+                               p.cohort or None, p.treatment or None)):
+            ws.cell(row=r, column=1 + j, value=v)
+        ws.cell(row=r, column=1).number_format = "@"
+        ws.cell(row=r, column=5).number_format = "DD MMM YYYY"
+    _widths(ws, (16, 24, 11, 9, 13, 13, 12, 8, 11))
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:I{len(d.pots) + 1}"
+
+
+def _groups(wb, d: dc.Design, refs: Refs) -> None:
     plan = d.plan
     ws = wb.create_sheet("groups")
     _header(ws, 1, ["Planting group", "Planting date", "Pots"]
@@ -245,7 +485,7 @@ def _groups(wb, d: dc.Design, plant_ref: dict) -> None:
     for g in range(1, d.groups + 1):
         r = g + 1
         ws.cell(row=r, column=1, value=g).font = BOLD
-        ws.cell(row=r, column=2, value=f"={plant_ref[g]}").number_format = "DD MMM YYYY"
+        ws.cell(row=r, column=2, value=f"={refs.plant[g]}").number_format = "DD MMM YYYY"
         ws.cell(row=r, column=3, value=sum(p.group == g for p in d.pots))
         for j, c in enumerate(plan.cohorts):
             ws.cell(row=r, column=4 + j, value=sum(
@@ -253,15 +493,12 @@ def _groups(wb, d: dc.Design, plant_ref: dict) -> None:
     r = d.groups + 4
     ws.cell(row=r, column=1, value=(
         f"N2O load per day as designed (capacity {plan.max_measured_per_day}; the timeline's "
-        f"last column recalculates if dates are edited)")).font = BOLD
+        f"last columns recalculate if dates are edited)")).font = BOLD
     _header(ws, r + 1, ["Date", "N2O measurements"])
     for i, (day, n) in enumerate(d.calendar_load().items()):
         ws.cell(row=r + 2 + i, column=1, value=day).number_format = "DD MMM YYYY (ddd)"
         ws.cell(row=r + 2 + i, column=2, value=n)
-    ws.column_dimensions["A"].width = 20
-    ws.column_dimensions["B"].width = 18
-    for j in range(len(plan.cohorts) + 1):
-        ws.column_dimensions[L(3 + j)].width = 20
+    _widths(ws, (20, 18) + (20,) * (len(plan.cohorts) + 1))
 
 
 def _jars(wb, d: dc.Design) -> None:
@@ -273,8 +510,7 @@ def _jars(wb, d: dc.Design) -> None:
         ws.append([p.barcode, f"{p.label} {p.position}"])
     for row in ws.iter_rows(min_row=2, max_col=1):
         row[0].number_format = "@"                      # Text: keeps leading zeros
-    ws.column_dimensions["A"].width = 16
-    ws.column_dimensions["B"].width = 34
+    _widths(ws, (16, 34))
     ws.freeze_panes = "A2"
 
 
@@ -292,6 +528,8 @@ def _info(wb, d: dc.Design) -> None:
             ("max N2O per day (designed)", d.max_load),
             ("max N2O per day (capacity)", plan.max_measured_per_day),
             ("N2O after flood (h)", ", ".join(str(h) for h in plan.measure_hours)),
+            ("N2O columns per load", dc.N2O_COLUMNS),
+            ("watering", f"every {dc.WATER_EVERY_DAYS} days, never Saturday or Sunday"),
             ("planting date, group 1", plan.planting_date.isoformat()),
             ("treatment DAP", plan.treatment_dap if plan.treatment_dap is not None else "none")]
     for k, v in rows:
@@ -308,17 +546,18 @@ def _info(wb, d: dc.Design) -> None:
             ws.append([pr.genotype, pr.cohort, pr.treatment or None, pr.reps, pr.sacrificial])
     for w in d.warnings:
         ws.append(["WARNING", w])
-    ws.column_dimensions["A"].width = 28
-    ws.column_dimensions["B"].width = 20
+    _widths(ws, (28, 20))
 
 
 def write(d: dc.Design, path: str) -> None:
     wb = Workbook()
     wb.remove(wb.active)
-    plant_ref = _timeline(wb, d)
-    _design(wb, d, plant_ref)
+    refs = _timeline(wb, d)
+    _design(wb, d, refs)
     _layout(wb, d)
-    _groups(wb, d, plant_ref)
+    _cohort_sheets(wb, d, refs)
+    _tags(wb, d, refs)
+    _groups(wb, d, refs)
     _jars(wb, d)
     _info(wb, d)
     wb.save(path)

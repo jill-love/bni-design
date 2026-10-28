@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-design_core.py: BNI experiment design (v0.1, 2026-10-28). No Qt, no Excel.
+design_core.py: BNI experiment design (v0.2, 2026-10-28). No Qt, no Excel.
 
 From a plan (genotypes x cohorts x treatments x reps, the bench, the N2O capacity) it
 builds one row per pot, then:
@@ -9,15 +9,25 @@ builds one row per pot, then:
      one pot at a time, and the bench can measure at most `max_measured_per_day` pots a
      day. So planting is staggered: the pots are split into the FEWEST equally sized
      groups, planted `stagger_days` apart, such that no calendar day needs more than
-     the capacity. The split is random but balanced: every cell (genotype x cohort x
-     treatment x role) is dealt across the groups as evenly as it divides.
+     the capacity, and no day has a flood and an N2O measurement together (they cannot
+     be run at the same time). Groups are at least 3 days apart by default: one group's
+     24 h and 48 h N2O days, then the next group's flood. The split is random but
+     balanced: every cell (genotype x cohort x treatment x role) is dealt across the
+     groups as evenly as it divides.
   2. BENCH LAYOUT. Pots are dealt across the available tables, then the zones of each
      table, keeping every cell, and every planting group, as evenly spread as it
      divides; slots within a zone are random (empty slots too). Position text is
      Tn-Zn-nn, the form the dosing station reads from a pot's tag.
   3. SCHEDULE. Per group and cohort: plant (DAP 0), treatment (treatment_dap), flood and
      sacrificial harvest (first N2O DAP - 1), N2O at each measure offset (24 h, 48 h),
-     harvest after the last one. Daily N2O load is counted per calendar day.
+     harvest after the last one. Daily N2O load is counted per calendar day. Watering is
+     every other day from planting until the flood, never on a weekend: a water day that
+     falls on Saturday or Sunday moves to Monday, and the count restarts from there.
+     Treatment, flood, N2O and harvest may fall on any day.
+  4. N2O ORDER. Per group and cohort the measured pots are put in loads of three (one
+     pot per N2O column), each load mixing treatments and genotypes, with every cell
+     spread over the three columns. The flood is done in the same order, so every pot
+     has the same time between its flood and its measurement.
 
 The same `seed` always gives the same design. Nothing here knows about Excel; the
 workbook (design_xlsx.py) writes what this computes, plus formulas so the dates can be
@@ -30,12 +40,15 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 
-__version__ = "0.1"
+__version__ = "0.2"
 
 MAX_ZONES = 8              # a table holds at most 8 zones x 25 slots
 MAX_SLOTS = 25
 MEASURE_HOURS = (24, 48)   # N2O after the flood; the last one is followed by harvest
 MAX_STAGGER_DAYS = 30      # search limit for the gap between planting groups
+DEFAULT_STAGGER_DAYS = 3   # 24 h N2O, 48 h N2O, then the next group's flood
+WATER_EVERY_DAYS = 2       # every other day; never Saturday or Sunday
+N2O_COLUMNS = 3            # pots per N2O load (one per chamber)
 
 MEASURED, SACRIFICIAL, SPARE = "MEASURED", "SACRIFICIAL", "SPARE"
 
@@ -68,7 +81,7 @@ class Plan:
     zones_per_table: int = 3
     slots_per_zone: int = 8
     max_measured_per_day: int = 50
-    min_stagger_days: int = 2
+    min_stagger_days: int = DEFAULT_STAGGER_DAYS
     planting_groups: int = 0       # 0 = choose automatically
     spares_per_genotype: int = 0
     measure_hours: tuple[int, ...] = MEASURE_HOURS
@@ -125,6 +138,8 @@ def validate(plan: Plan) -> list[str]:
     if plan.min_stagger_days < len(plan.measure_hours):
         p.append(f"days between planting groups must be at least {len(plan.measure_hours)} "
                  f"so one group's N2O days never overlap the next group's")
+    if any(h % 24 or h < 24 for h in plan.measure_hours):
+        p.append("N2O sampling times must be whole days after the flood (24 h, 48 h, ...)")
     names = [c.name for c in plan.cohorts]
     if not names:
         p.append("add at least one cohort")
@@ -181,6 +196,9 @@ class Pot:
     treatment: str = ""
     rep: int = 0
     group: int = 0                 # planting group, 1-based
+    load: int = 0                  # N2O load within its group x cohort (measured pots)
+    column: int = 0                # N2O column within the load
+    seq: int = 0                   # order within its group x cohort: flood, N2O, harvest
     table: int = 0
     zone: int = 0
     slot: int = 0
@@ -271,10 +289,31 @@ def daily_load(plan: Plan, pots: list[Pot], stagger_days: int) -> Counter:
     return load
 
 
-def choose_groups(plan: Plan, pots: list[Pot], rng: random.Random) -> tuple[int, int, Counter]:
+def clash_days(plan: Plan, groups: int, stagger_days: int) -> list[int]:
+    """Days (after group 1's planting) with a flood AND an N2O measurement: they cannot
+    be run together."""
+    flood, n2o = set(), set()
+    for g in range(groups):
+        for c in plan.cohorts:
+            base = g * stagger_days + c.first_n2o_dap
+            flood.add(base - 1)
+            n2o.update(base + off for off in plan.measure_offsets)
+    return sorted(flood & n2o)
+
+
+def choose_groups(plan: Plan, pots: list[Pot], rng: random.Random
+                  ) -> tuple[int, int, Counter, list[str]]:
     """Split the pots into the fewest balanced planting groups, planted `stagger` days
-    apart, that keep every day's N2O load within capacity. Sets pot.group. Returns
-    (groups, stagger_days, load)."""
+    apart, that keep every day's N2O load within capacity and never put a flood on an
+    N2O day. Sets pot.group. Returns (groups, stagger_days, load, warnings)."""
+    warnings = []
+    inherent = clash_days(plan, 1, 0)                  # the cohorts alone already clash
+    if inherent:
+        warnings.append(
+            f"cohorts' days collide inside one planting group: a flood falls on an N2O day "
+            f"(DAP {', '.join(map(str, inherent))}). Space the cohorts' first N2O days at "
+            f"least {len(plan.measure_hours) + 1} days apart.")
+    ok_clash = lambda k, s: inherent or not clash_days(plan, k, s)
     n_measured = sum(p.role == MEASURED for p in pots)
     fixed = plan.planting_groups if plan.planting_groups > 0 else None
     tries = [fixed] if fixed else range(1, max(1, n_measured) + 1)
@@ -286,13 +325,21 @@ def choose_groups(plan: Plan, pots: list[Pot], rng: random.Random) -> tuple[int,
             p.group = assign[id(p)]
         for s in range(plan.min_stagger_days, MAX_STAGGER_DAYS + 1):
             load = daily_load(plan, pots, s)
-            if max(load.values(), default=0) <= plan.max_measured_per_day:
-                return k, s, load
+            if max(load.values(), default=0) <= plan.max_measured_per_day and ok_clash(k, s):
+                return k, s, load, warnings
             if k == 1:
                 break                                  # one group: the gap changes nothing
     if fixed:
         s = plan.min_stagger_days
-        return fixed, s, daily_load(plan, pots, s)     # over capacity: reported, not hidden
+        load = daily_load(plan, pots, s)               # reported, not hidden
+        if max(load.values(), default=0) > plan.max_measured_per_day:
+            warnings.append(f"{max(load.values())} N2O measurements fall on one day "
+                            f"(capacity {plan.max_measured_per_day}) with {fixed} planting "
+                            f"group(s) fixed: use Auto or more groups")
+        if not inherent and clash_days(plan, fixed, s):
+            warnings.append(f"with {fixed} planting group(s) {s} days apart a flood falls on "
+                            f"an N2O day: use Auto or a longer gap")
+        return fixed, s, load, warnings
     raise PlanError("no planting schedule keeps N2O within the daily capacity")
 
 
@@ -322,7 +369,74 @@ def place(plan: Plan, pots: list[Pot], rng: random.Random) -> None:
 
 
 # ======================================================================================
-# 3. THE DESIGN
+# 3. N2O ORDER
+# ======================================================================================
+def order_n2o(plan: Plan, pots: list[Pot], rng: random.Random) -> None:
+    """Sets load, column and seq on the measured pots of every group x cohort, and seq on
+    the sacrificial pots (their harvest order on flood day)."""
+    from itertools import permutations
+    by_gc = defaultdict(list)
+    for p in pots:
+        if p.role in (MEASURED, SACRIFICIAL):
+            by_gc[(p.group, p.cohort, p.role)].append(p)
+    for (g, c, role), members in sorted(by_gc.items()):
+        if role == SACRIFICIAL:
+            for i, p in enumerate(sorted(members, key=lambda p: (p.genotype, p.treatment, p.rep)), 1):
+                p.seq = i
+            continue
+        # interleave the cells: one pot from each in a fresh random order, round after round,
+        # so consecutive pots (one load) are different treatments / genotypes
+        cells = defaultdict(list)
+        for p in members:
+            cells[(p.genotype, p.treatment)].append(p)
+        for lst in cells.values():
+            rng.shuffle(lst)
+        seq = []
+        while any(cells.values()):
+            keys = [k for k, v in cells.items() if v]
+            rng.shuffle(keys)
+            keys.sort(key=lambda k: -len(cells[k]))     # the fullest first: no tail of one cell
+            if seq:                                     # never the same cell twice running
+                last = (seq[-1].genotype, seq[-1].treatment)
+                if len(keys) > 1 and keys[0] == last:
+                    keys[0], keys[1] = keys[1], keys[0]
+            seq.extend(cells[k].pop() for k in keys)
+        # column per pot: the permutation that keeps each cell spread over the columns
+        col_n = defaultdict(Counter)
+        for i in range(0, len(seq), N2O_COLUMNS):
+            load = seq[i:i + N2O_COLUMNS]
+            cols = range(1, N2O_COLUMNS + 1)
+            best = min(permutations(cols, len(load)),
+                       key=lambda perm: (sum(col_n[(p.genotype, p.treatment)][col]
+                                             for p, col in zip(load, perm)), rng.random()))
+            for p, col in zip(load, best):
+                p.load, p.column = i // N2O_COLUMNS + 1, col
+                col_n[(p.genotype, p.treatment)][col] += 1
+        # seq follows load, then column (the order the chambers are filled)
+        for k, p in enumerate(sorted(seq, key=lambda p: (p.load, p.column)), 1):
+            p.seq = k
+
+
+# ======================================================================================
+# 4. WATERING
+# ======================================================================================
+def water_days(planted: dt.date, until: dt.date) -> list[dt.date]:
+    """Every other day after planting, strictly before `until` (the flood), never on a
+    weekend: a water day that falls on Saturday or Sunday moves to Monday and the count
+    restarts from there. Planting day counts as watered."""
+    out = []
+    last = planted
+    day = planted + dt.timedelta(days=1)
+    while day < until:
+        if day.weekday() < 5 and (day - last).days >= WATER_EVERY_DAYS:
+            out.append(day)
+            last = day
+        day += dt.timedelta(days=1)
+    return out
+
+
+# ======================================================================================
+# 5. THE DESIGN
 # ======================================================================================
 @dataclass
 class Design:
@@ -354,6 +468,19 @@ class Design:
                        f"{h} h N2O" + (", harvest" if last else "")))
         return ev
 
+    def water(self, g: int, cohort: Cohort) -> list[dt.date]:
+        p0 = self.group_planting(g)
+        return water_days(p0, p0 + dt.timedelta(days=cohort.first_n2o_dap - 1))
+
+    def day_text(self, g: int, cohort: Cohort, day: dt.date) -> str:
+        """What the timeline cell for group g, cohort `cohort` says on `day`."""
+        ev = dict((d, t) for d, t in self.events(g, cohort))
+        watered = day in set(self.water(g, cohort))
+        if day in ev:
+            t = ev[day]
+            return f"{t}; water" if t == "Treatment" and watered else t
+        return "Water" if watered else ""
+
     def calendar_load(self) -> dict[dt.date, int]:
         return {self.plan.planting_date + dt.timedelta(days=d): n
                 for d, n in sorted(self.load.items())}
@@ -372,17 +499,13 @@ def build(plan: Plan) -> Design:
         raise PlanError("; ".join(problems))
     rng = random.Random(plan.seed)
     pots = make_pots(plan)
-    groups, stagger, load = choose_groups(plan, pots, rng)
+    groups, stagger, load, warnings = choose_groups(plan, pots, rng)
     place(plan, pots, rng)
+    order_n2o(plan, pots, rng)
     # barcodes in random order, so a barcode says nothing about the pot's treatment
     numbers = rng.sample(range(1, len(pots) + 1), len(pots))
     width = max(3, len(str(len(pots))))
     for p, n in zip(pots, numbers):
         p.barcode = f"{plan.name.strip()}-S{n:0{width}d}"
     pots.sort(key=lambda p: (p.table, p.zone, p.slot))
-    d = Design(plan, pots, groups, stagger, load)
-    if d.max_load > plan.max_measured_per_day:
-        d.warnings.append(f"{d.max_load} N2O measurements fall on one day "
-                          f"(capacity {plan.max_measured_per_day}) with {groups} planting "
-                          f"group(s) fixed: use Auto or more groups")
-    return d
+    return Design(plan, pots, groups, stagger, load, warnings)

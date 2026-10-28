@@ -18,9 +18,9 @@ MON = dt.date(2026, 11, 2)
 
 
 def p0_plan(**kw):
-    """The P0 shape: one genotype, 3 cohorts 2 days apart, 3 treatments, 10 + 3 SAC."""
+    """The P0 shape: one genotype, 3 cohorts 3 days apart, 3 treatments, 10 + 3 SAC."""
     base = dict(name="B73-P0", seed=7, planting_date=MON, treatment_dap=14,
-                cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 23), dc.Cohort("C", 25)],
+                cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24), dc.Cohort("C", 27)],
                 rows=[dc.PlanRow("B73", c, t, 10, 3) for c in "ABC" for t in ("CTRL", "SN", "INH")],
                 spares_per_genotype=8)
     base.update(kw)
@@ -31,7 +31,7 @@ def big_plan(**kw):
     """3 genotypes x 2 cohorts x 3 treatments x 12 reps + 2 SAC = 252 pots, 216 measured."""
     base = dict(name="BNI-P1", seed=3, planting_date=MON, treatment_dap=14,
                 zones_per_table=5, slots_per_zone=12,
-                cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 23)],
+                cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24)],
                 rows=[dc.PlanRow(g, c, t, 12, 2) for g in ("B73", "Mo17", "W22")
                       for c in "AB" for t in ("CTRL", "SN", "INH")])
     base.update(kw)
@@ -88,11 +88,41 @@ def test_fewest_equal_groups_that_fit_capacity():
         assert max(per.values()) - min(per.get(g, 0) for g in range(1, 4)) <= 1, cell
 
 
+def test_default_gap_is_3_days():
+    assert dc.Plan().min_stagger_days == 3
+    d = dc.build(big_plan(cohorts=[dc.Cohort("A", 21)], rows=[
+        dc.PlanRow(g, "A", t, 12) for g in ("B73", "Mo17", "W22") for t in ("CTRL", "SN")]))
+    assert d.groups == 2 and d.stagger_days == 3            # 72 measured: 2 x 36
+
+
 def test_gap_widens_when_cohorts_would_collide():
     d = dc.build(big_plan())
-    # cohorts are 2 days apart, so a 2-day gap would stack group 2's A on group 1's B
-    assert d.stagger_days == 4
-    assert dc.daily_load(d.plan, d.pots, 2)[23] > 50
+    # cohorts are 3 days apart: a 3-day gap stacks group 2's A on group 1's B (72 > 50),
+    # 4 and 5 put a flood on an N2O day, 6 is the first that works
+    assert d.stagger_days == 6
+    assert dc.daily_load(d.plan, d.pots, 3)[24] > 50
+    assert dc.clash_days(d.plan, 3, 4) and dc.clash_days(d.plan, 3, 5)
+    assert not dc.clash_days(d.plan, 3, 6) and not d.warnings
+
+
+def test_never_a_flood_on_an_n2o_day():
+    for plan in (p0_plan(), big_plan(), big_plan(max_measured_per_day=20)):
+        d = dc.build(plan)
+        flood, n2o = set(), set()
+        for g in range(1, d.groups + 1):
+            for c in plan.cohorts:
+                for day, text in d.events(g, c):
+                    if "flood" in text.lower():
+                        flood.add(day)
+                    if "N2O" in text:
+                        n2o.add(day)
+        assert not flood & n2o
+
+
+def test_cohorts_too_close_are_warned_not_refused():
+    d = dc.build(p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 23)],
+                         rows=[dc.PlanRow("B73", c, "CTRL", 5) for c in "AB"]))
+    assert d.warnings and "collide" in d.warnings[0]
 
 
 def test_lower_capacity_means_more_groups():
@@ -169,11 +199,51 @@ def test_validation_says_what_to_fix(kw, words):
 def test_events_follow_days_after_planting():
     d = dc.build(big_plan())
     ev = d.events(2, d.plan.cohort("A"))
-    p2 = MON + dt.timedelta(days=4)
+    p2 = MON + dt.timedelta(days=6)
     assert ev == [(p2, "Plant"), (p2 + dt.timedelta(14), "Treatment"),
                   (p2 + dt.timedelta(20), "Sacrificial harvest, flood"),
                   (p2 + dt.timedelta(21), "24 h N2O"),
                   (p2 + dt.timedelta(22), "48 h N2O, harvest")]
+
+
+def test_watering_every_other_day_never_on_a_weekend():
+    mon = dc.water_days(MON, MON + dt.timedelta(days=18))
+    assert [d.strftime("%a %d") for d in mon] == [
+        "Wed 04", "Fri 06", "Mon 09", "Wed 11", "Fri 13", "Mon 16", "Wed 18"]
+    tue = dc.water_days(MON + dt.timedelta(days=1), MON + dt.timedelta(days=18))
+    assert [d.strftime("%a %d") for d in tue][:3] == ["Thu 05", "Mon 09", "Wed 11"]
+    for start in range(7):                                 # any planting weekday
+        days = dc.water_days(MON + dt.timedelta(days=start), MON + dt.timedelta(days=40))
+        assert all(d.weekday() < 5 for d in days)
+        assert all((b - a).days >= 2 for a, b in zip(days, days[1:]))
+        assert all((b - a).days <= 4 for a, b in zip(days, days[1:]))   # Thu -> Mon at most
+
+
+def test_weekend_events_are_allowed_but_not_weekend_water():
+    d = dc.build(p0_plan(planting_date=MON - dt.timedelta(days=1)))   # a Sunday planting
+    days = [day for day, _ in d.events(1, d.plan.cohort("A"))]
+    assert days[0].weekday() == 6                                      # planted Sunday
+    for c in d.plan.cohorts:
+        assert all(day.weekday() < 5 for day in d.water(1, c))
+
+
+def test_n2o_loads_mix_cells_and_spread_over_columns():
+    d = dc.build(big_plan())
+    for g in range(1, d.groups + 1):
+        for c in d.plan.cohorts:
+            m = sorted((p for p in d.pots if p.group == g and p.cohort == c.name
+                        and p.role == dc.MEASURED), key=lambda p: p.seq)
+            assert [p.seq for p in m] == list(range(1, len(m) + 1))
+            loads = Counter(p.load for p in m)
+            assert all(n == dc.N2O_COLUMNS for n in list(loads.values())[:-1])
+            for ld in loads:
+                cols = [p.column for p in m if p.load == ld]
+                assert len(set(cols)) == len(cols)          # one pot per column
+                cells = [(p.genotype, p.treatment) for p in m if p.load == ld]
+                assert len(set(cells)) == len(cells)        # no cell twice in a load
+            for cell in {(p.genotype, p.treatment) for p in m}:
+                per = Counter(p.column for p in m if (p.genotype, p.treatment) == cell)
+                assert max(per.values()) - min(per.get(k, 0) for k in (1, 2, 3)) <= 1
 
 
 def test_plan_file_round_trip():
@@ -189,7 +259,10 @@ def test_workbook_sheets_and_jars(tmp_path):
     path = tmp_path / "x.xlsx"
     dx.write(d, str(path))
     wb = openpyxl.load_workbook(path)
-    assert wb.sheetnames == ["timeline", "design", "layout", "groups", "jars", "info"]
+    per = [f"{k}_G{g}_{c}" for g in range(1, d.groups + 1) for c in "AB"
+           for k in ("flood", "measure", "harvest")]
+    assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups", "jars",
+                                                                       "info"]
     jars = wb["jars"]
     assert [c.value for c in jars[1]] == ["barcode", "tag"]
     rows = list(jars.iter_rows(min_row=2, values_only=True))
@@ -199,6 +272,63 @@ def test_workbook_sheets_and_jars(tmp_path):
     assert jars["A2"].number_format == "@"
     design = wb["design"]
     assert design["H2"].value.startswith("=timeline!$F$")              # linked planting date
+
+
+def test_one_group_sheets_are_named_by_cohort(tmp_path):
+    import openpyxl
+    d = dc.build(p0_plan())
+    path = tmp_path / "p0.xlsx"
+    dx.write(d, str(path))
+    names = openpyxl.load_workbook(path).sheetnames
+    assert {"flood_A", "measure_A", "harvest_A", "flood_C", "harvest_C", "tags"} <= set(names)
+
+
+def test_flood_measure_harvest_contents(tmp_path):
+    import openpyxl
+    d = dc.build(p0_plan())
+    path = tmp_path / "p0.xlsx"
+    dx.write(d, str(path))
+    wb = openpyxl.load_workbook(path)
+    meas = sorted((p for p in d.pots if p.cohort == "A" and p.role == dc.MEASURED),
+                  key=lambda p: p.seq)
+    sac = [p for p in d.pots if p.cohort == "A" and p.role == dc.SACRIFICIAL]
+    fl = wb["flood_A"]
+    col_a = [fl.cell(r, 1).value for r in range(1, fl.max_row + 1)]
+    assert "SACRIFICIAL harvest first" in col_a and "FLOOD in this order" in col_a
+    bars = [fl.cell(r, 2).value for r in range(col_a.index("FLOOD in this order") + 2,
+                                                fl.max_row + 1)]
+    assert bars == [p.barcode for p in meas]               # flood in N2O order
+    sac_rows = col_a.index("FLOOD in this order") - col_a.index("SACRIFICIAL harvest first") - 2
+    assert sac_rows == len(sac) == 9
+    assert fl["B2"].value.startswith("=timeline!")         # the date follows the timeline
+    ms = wb["measure_A"]
+    heads = [r for r in range(1, ms.max_row + 1) if ms.cell(r, 1).value == "load"]
+    assert len(heads) == 2                                 # 24 h and 48 h blocks
+    first = [ms.cell(r, 4).value for r in range(heads[0] + 1, heads[0] + 1 + len(meas))]
+    assert first == [p.barcode for p in meas]
+    hv = wb["harvest_A"]
+    assert [hv.cell(r, 2).value for r in range(5, 5 + len(meas))] == [p.barcode for p in meas]
+    tags = wb["tags"]
+    assert [c.value for c in tags[1]][:3] == ["barcode", "tag_text", "position"]
+    assert tags.max_row - 1 == len(d.pots)
+
+
+def test_layout_is_bright_with_a_legend(tmp_path):
+    import openpyxl
+    for plan, by in ((p0_plan(), "cohort"), (big_plan(), "group")):
+        d = dc.build(plan)
+        path = tmp_path / "l.xlsx"
+        dx.write(d, str(path))
+        ws = openpyxl.load_workbook(path)["layout"]
+        assert ws["A3"].value == f"Colour = {'planting group' if by == 'group' else 'cohort'}"
+        got_by, colours = dx.layout_colours(d)
+        assert got_by == by
+        legend = {ws.cell(r, 1).fill.start_color.rgb[-6:]: ws.cell(r, 2).value
+                  for r in range(4, 4 + len(colours))}
+        assert set(legend) == {h.upper() for h in colours.values()}
+        fills = {c.fill.start_color.rgb[-6:] for row in ws.iter_rows(min_row=4 + len(colours))
+                 for c in row if c.value and "\n" in str(c.value)}
+        assert fills <= set(legend) | {dx.SPARE_BG}
 
 
 def test_timeline_formulas_calculate(tmp_path):
@@ -220,15 +350,20 @@ def test_timeline_formulas_calculate(tmp_path):
     from openpyxl.utils import get_column_letter as L
     excel0 = dt.date(1899, 12, 30)
     got = {}
-    for r in range(start, ws.max_row + 1):
+    last = start
+    while str(ws.cell(last + 1, 1).value or "").startswith("="):
+        last += 1
+    for r in range(start, last + 1):
         day = excel0 + dt.timedelta(days=int(val(f"TIMELINE'!A{r}")))
         got[day] = int(val(f"TIMELINE'!{L(tot_col)}{r}"))
         for j, (g, c) in enumerate((g, c) for g in range(1, d.groups + 1) for c in d.plan.cohorts):
             text = val(f"TIMELINE'!{L(3 + j)}{r}")
-            want = dict(d.events(g, c)).get(day)
-            if want:
-                assert text.startswith(want.split(",")[0]), (day, g, c.name, text, want)
+            assert text == d.day_text(g, c, day), (day, g, c.name, text, d.day_text(g, c, day))
     assert {k: v for k, v in got.items() if v} == d.calendar_load()
+    flood_col = tot_col - 1
+    assert all(int(val(f"TIMELINE'!{L(flood_col)}{r}")) == 0
+               or int(val(f"TIMELINE'!{L(tot_col)}{r}")) == 0
+               for r in range(start, last + 1))           # never both on one day
 
 
 # ---------------------------------------------------------------- window
