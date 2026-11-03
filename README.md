@@ -21,6 +21,26 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
 Treatment, flood, N2O and harvest may fall on any day, weekends included.
 
 5. **N2O order**: in each group and cohort, the measured pots are put in loads of 3 (one per N2O column). Each load mixes treatments and genotypes, and every combination is spread over the 3 columns. Pots are flooded in the same order, so every pot has the same time between flood and measurement.
+6. **Task list for Asana**: every piece of work as its own dated task. Asana has no repeat option on import, so each repeat (each watering day, each germination check, each N2O day) is its own row. Lab work is put on working days (Mon-Fri), counted from the event it follows:
+
+   | Task | When |
+   |---|---|
+   | Pre-fill pots with weighed soil | the working day before planting |
+   | Label, plant seed, and initial wet-up of pots | planting day |
+   | Label tables with treatment and group information per pot | planting day |
+   | If using ZeaL genotypes, check for germination | every weekday of the 7 days after planting |
+   | Maintenance watering | each watering day (one task per day, for every group and cohort still being watered) |
+   | Apply treatments | treatment day |
+   | KCl soil collection setup (gathering supplies, printing & labeling tubes) | the working day before a cohort's first harvest |
+   | Flood | flood day |
+   | N2O measurements | each N2O day (24 h, 48 h) |
+   | Plant harvest and soil sample collection | flood day (sacrificial pots) and after the last N2O (final) |
+   | KCl extractions | the working day after each harvest |
+   | KCl analysis (plate reader) | the working day after each extraction |
+   | Plant dry weights measure & record | 3 working days after each harvest |
+   | Wash pots for reuse | the working day after the final harvest |
+
+   The offsets are `TASK_LAGS` in `design_core.py`. In the workbook every due date is a formula on the timeline's yellow inputs (`WORKDAY` for the working-day offsets), so editing a planting date, the treatment day, a cohort's first N2O day or the watering days moves the tasks too.
 
 The same random seed always gives the same design.
 
@@ -36,6 +56,7 @@ The same random seed always gives the same design.
 | `harvest_*` | The measured pots after the last N2O time, with shoot and root weight columns. |
 | `tags` | Barcode, tag text and position for label printing, by planting group. |
 | `groups` | Planting groups and the N2O load per day as designed. |
+| `asana_tasks` | One row per task: Name, Due Date, Section/Column, Description, and nothing else. **File > Save As > CSV**, then in Asana: project > Import > CSV. Due dates follow the timeline's inputs. Watering has a few spare rows at the bottom, used when an edit adds watering days; a watering row whose day an edit removes goes blank. Delete blank rows (filter on Name) before saving the CSV. |
 | `jars` | `barcode` + `tag` (the tag ends with the position). This is the sheet the dosing station's provisioning reads; add its `admin` sheet before provisioning. |
 | `info` | The plan as entered, the seed and the version. |
 

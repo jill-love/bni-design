@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-design_core.py: BNI experiment design (v0.2, 2026-10-28). No Qt, no Excel.
+design_core.py: BNI experiment design (v0.3, 2026-11-03). No Qt, no Excel.
 
 From a plan (genotypes x cohorts x treatments x reps, the bench, the N2O capacity) it
 builds one row per pot, then:
@@ -29,6 +29,11 @@ builds one row per pot, then:
      pot per N2O column), each load mixing treatments and genotypes, with every cell
      spread over the three columns. The flood is done in the same order, so every pot
      has the same time between its flood and its measurement.
+  5. TASKS. One dated task per piece of work, for Asana (no repeat option there, so every
+     repeat is its own task): soil, planting and labelling around each planting day,
+     the ZeaL germination check on the weekdays of the week after planting, watering,
+     treatment, flood, N2O, harvest, then KCl, dry weights and washing a set number of
+     working days later (TASK_LAGS).
 
 The same `seed` always gives the same design. Nothing here knows about Excel; the
 workbook (design_xlsx.py) writes what this computes, plus formulas so the dates can be
@@ -41,7 +46,7 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 
-__version__ = "0.2"
+__version__ = "0.3"
 
 MAX_ZONES = 8              # a table holds at most 8 zones x 25 slots
 MAX_SLOTS = 25
@@ -53,6 +58,18 @@ WATER_DAY_NAMES = "Mon, Wed, Fri"
 N2O_COLUMNS = 3            # pots per N2O load (one per chamber)
 
 MEASURED, SACRIFICIAL, SPARE = "MEASURED", "SACRIFICIAL", "SPARE"
+
+# Tasks off the bench schedule, in working days (Mon-Fri) from the event they follow
+# (Excel's WORKDAY, so the workbook recalculates them). Negative = before.
+TASK_LAGS = {
+    "prefill": -1,          # pre-fill pots: the working day before planting
+    "kcl_setup": -1,        # KCl supplies and tubes: the working day before a harvest
+    "kcl_extract": 1,       # KCl extraction: the working day after a harvest
+    "kcl_analysis": 1,      # plate reader: working days after the extraction
+    "dry_weights": 3,       # oven-dried: 3 working days after a harvest
+    "wash": 1,              # wash pots: the working day after the final harvest
+}
+GERMINATION_WORKDAYS = 5    # ZeaL germination check: the weekdays of the week after planting
 
 
 # ======================================================================================
@@ -456,8 +473,37 @@ def water_days(planted: dt.date, until: dt.date,
     return out
 
 
+def workday(day: dt.date, n: int) -> dt.date:
+    """`n` working days (Mon-Fri) after `day` (before, if negative). n = 0 keeps a working
+    day and moves a weekend day to the next Monday."""
+    if n == 0:
+        while day.weekday() >= 5:
+            day += dt.timedelta(days=1)
+        return day
+    step = dt.timedelta(days=1 if n > 0 else -1)
+    for _ in range(abs(n)):
+        day += step
+        while day.weekday() >= 5:
+            day += step
+    return day
+
+
+@dataclass
+class Task:
+    """A dated piece of work. The date is `lag` working days from `anchor` (lag None: the
+    anchor day itself, weekend or not), so the workbook can write it as a formula on the
+    timeline. Anchors: ("plant", g), ("treat", g), ("flood", g, cohort),
+    ("n2o", g, cohort, offset), ("water", n) = the n-th watering day of the experiment."""
+    date: dt.date
+    name: str
+    section: str = ""      # Asana section: what kind of work
+    notes: str = ""
+    anchor: tuple = ()
+    lag: int | None = None
+
+
 # ======================================================================================
-# 5. THE DESIGN
+# 6. THE DESIGN
 # ======================================================================================
 @dataclass
 class Design:
@@ -501,6 +547,96 @@ class Design:
             t = ev[day]
             return f"{t}; water" if t == "Treatment" and watered else t
         return "Water" if watered else ""
+
+    def anchor_date(self, anchor: tuple) -> dt.date:
+        kind, *a = anchor
+        if kind == "water":
+            return self.water_days_all()[a[0] - 1]
+        p0 = self.group_planting(a[0])
+        if kind == "plant":
+            return p0
+        if kind == "treat":
+            return p0 + dt.timedelta(days=self.plan.treatment_dap)
+        c = self.plan.cohort(a[1])
+        if kind == "flood":
+            return p0 + dt.timedelta(days=c.first_n2o_dap - 1)
+        return p0 + dt.timedelta(days=c.first_n2o_dap + a[2])          # "n2o"
+
+    def water_days_all(self) -> list[dt.date]:
+        """Every day anything is watered, any group or cohort."""
+        return sorted({d for g in range(1, self.groups + 1) for c in self.plan.cohorts
+                       for d in self.water(g, c)})
+
+    def water_who(self, day: dt.date) -> str:
+        """Who is watered on `day`: 'cohorts A, B' (group 1 only) or 'G1 A, G1 B, G2 A'."""
+        many = self.groups > 1
+        who = [f"G{g} {c.name}" if many else c.name for g in range(1, self.groups + 1)
+               for c in self.plan.cohorts if day in self.water(g, c)]
+        return ("" if many else "cohorts ") + ", ".join(who)
+
+    def tasks(self) -> list[Task]:
+        """Every task with its own date, in date order (see TASK_LAGS)."""
+        plan, out = self.plan, []
+        lag = TASK_LAGS
+        many = self.groups > 1
+        who = lambda g, c: f"cohort {c}" + (f", group {g}" if many else "")
+
+        def add(anchor, n, name, section, notes=""):
+            day = self.anchor_date(anchor)
+            day = day if n is None else workday(day, n)
+            out.append(Task(day, name, section, notes, anchor, n))
+
+        for g in range(1, self.groups + 1):
+            sfx = f" (group {g})" if many else ""
+            n = sum(p.group == g for p in self.pots)
+            add(("plant", g), lag["prefill"], f"Pre-fill pots with weighed soil{sfx}", "Setup",
+                f"{n} pots")
+            add(("plant", g), None, f"Label, plant seed, and initial wet-up of pots{sfx}",
+                "Planting", f"{n} pots")
+            add(("plant", g), None, f"Label tables with treatment and group information per pot"
+                f"{sfx}", "Planting", "positions and tags: design map, tags sheet")
+            # the 7 days after planting always hold 5 weekdays: working days 1 to 5
+            for k in range(1, GERMINATION_WORKDAYS + 1):
+                add(("plant", g), k, f"If using ZeaL genotypes, check for germination{sfx}",
+                    "Planting", f"check {k} of {GERMINATION_WORKDAYS}")
+            if plan.treatment_dap is not None:
+                add(("treat", g), None, f"Apply treatments{sfx}", "Treatment")
+            for c in plan.cohorts:
+                w = who(g, c.name)
+                sac = sum(p.role == SACRIFICIAL and p.group == g and p.cohort == c.name
+                          for p in self.pots)
+                meas = sum(p.role == MEASURED and p.group == g and p.cohort == c.name
+                           for p in self.pots)
+                last = ("n2o", g, c.name, plan.measure_offsets[-1])
+                harvests = [(("flood", g, c.name), f"sacrificial harvest, {sac} pots")] if sac else []
+                harvests.append((last, f"final harvest, {meas} pots"))
+                add(harvests[0][0], lag["kcl_setup"],
+                    f"KCl soil collection setup (gathering supplies, printing & labeling tubes)"
+                    f" - {w}", "KCl", f"{sac + meas} tubes"
+                    + (" (sacrificial and final harvests)" if sac else ""))
+                add(("flood", g, c.name), None, f"Flood - {w}", "N2O",
+                    (f"harvest the {sac} sacrificial pots first; " if sac else "")
+                    + f"flood {meas} pots in the flood sheet's order")
+                for h, off in zip(plan.measure_hours, plan.measure_offsets):
+                    add(("n2o", g, c.name, off), None, f"N2O measurements, {h} h - {w}", "N2O",
+                        f"{meas} pots")
+                for anchor, what in harvests:
+                    add(anchor, None, f"Plant harvest and soil sample collection - {w}",
+                        "Harvest", what)
+                    add(anchor, lag["kcl_extract"], f"KCl extractions - {w}", "KCl", what)
+                    add(anchor, lag["kcl_extract"] + lag["kcl_analysis"],
+                        f"KCl analysis (plate reader) - {w}", "KCl", what)
+                    add(anchor, lag["dry_weights"], f"Plant dry weights measure & record - {w}",
+                        "Harvest", what)
+                add(last, lag["wash"], f"Wash pots for reuse - {w}", "Cleanup",
+                    f"{meas + sac} pots")
+        # watering: one task per day, whatever is still being watered that day
+        for k, day in enumerate(self.water_days_all(), 1):
+            add(("water", k), None, "Maintenance watering", "Watering", self.water_who(day))
+        order = {"Setup": 0, "Planting": 1, "Watering": 2, "Treatment": 3, "KCl": 4,
+                 "Harvest": 5, "N2O": 6, "Cleanup": 7}
+        out.sort(key=lambda t: (t.date, order.get(t.section, 9), t.name))
+        return out
 
     def calendar_load(self) -> dict[dt.date, int]:
         return {self.plan.planting_date + dt.timedelta(days=d): n

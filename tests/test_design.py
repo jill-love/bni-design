@@ -274,6 +274,161 @@ def test_plan_file_round_trip():
     assert back == plan
 
 
+# ---------------------------------------------------------------- tasks
+def test_workday_skips_weekends():
+    fri, sat = dt.date(2026, 11, 6), dt.date(2026, 11, 7)
+    assert dc.workday(fri, 1) == dt.date(2026, 11, 9)           # Fri + 1 -> Mon
+    assert dc.workday(MON, -1) == dt.date(2026, 10, 30)         # Mon - 1 -> Fri
+    assert dc.workday(sat, 0) == dc.workday(sat, 1) == dt.date(2026, 11, 9)
+    assert dc.workday(sat, -1) == fri
+    assert dc.workday(MON, 3) == dt.date(2026, 11, 5)
+
+
+def _named(tasks, start):
+    return [t for t in tasks if t.name.startswith(start)]
+
+
+def test_every_task_kind_is_listed_once_per_repeat():
+    d = dc.build(p0_plan())                                     # 1 group, cohorts A-C, SAC pots
+    t = d.tasks()
+    assert [x.date for x in t] == sorted(x.date for x in t)
+    one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments")
+    for start in one_each:
+        assert len(_named(t, start)) == 1, start
+    per_cohort = ("KCl soil collection setup", "Flood - ", "Wash pots")
+    for start in per_cohort:
+        assert len(_named(t, start)) == 3, start
+    assert len(_named(t, "N2O measurements")) == 3 * 2          # 24 h and 48 h per cohort
+    for start in ("Plant harvest", "KCl extractions", "KCl analysis", "Plant dry weights"):
+        assert len(_named(t, start)) == 3 * 2, start            # sacrificial + final
+    water = _named(t, "Maintenance watering")
+    assert [x.date for x in water] == sorted({w for c in d.plan.cohorts for w in d.water(1, c)})
+
+
+def test_germination_check_is_every_weekday_of_the_first_week():
+    for start in range(7):                                      # any planting weekday
+        p0 = MON + dt.timedelta(days=start)
+        d = dc.build(p0_plan(planting_date=p0))
+        days = [x.date for x in _named(d.tasks(), "If using ZeaL genotypes, check for germination")]
+        want = [p0 + dt.timedelta(days=k) for k in range(1, 8)
+                if (p0 + dt.timedelta(days=k)).weekday() < 5]
+        assert days == want and len(days) == 5
+
+
+def test_lab_tasks_are_on_working_days_after_the_harvest():
+    d = dc.build(p0_plan(planting_date=MON - dt.timedelta(days=2)))   # weekend harvests
+    t = d.tasks()
+    lab = ("Pre-fill", "KCl", "Plant dry weights", "Wash pots", "If using ZeaL", "Maintenance")
+    assert all(x.date.weekday() < 5 for x in t if x.name.startswith(lab))
+    for c in d.plan.cohorts:
+        final = d.events(1, c)[-1][0]
+        mine = [x for x in t if x.name.endswith(f"cohort {c.name}")]
+        ext = [x.date for x in mine if x.name.startswith("KCl extractions")]
+        ana = [x.date for x in mine if x.name.startswith("KCl analysis")]
+        setup = [x.date for x in mine if x.name.startswith("KCl soil collection setup")]
+        harvest = [x.date for x in mine if x.name.startswith("Plant harvest")]
+        assert all(a > e for a, e in zip(ana, ext)) and all(e > h for e, h in zip(ext, harvest))
+        assert setup[0] < min(harvest) and max(harvest) == final
+        wash = [x.date for x in mine if x.name.startswith("Wash pots")]
+        assert wash[0] > final
+
+
+def test_several_groups_name_the_group():
+    d = dc.build(big_plan())
+    assert d.groups > 1
+    t = d.tasks()
+    for g in range(1, d.groups + 1):
+        assert len(_named(t, f"Label, plant seed, and initial wet-up of pots (group {g})")) == 1
+        assert len([x for x in t if x.name.startswith("N2O measurements")
+                    and x.name.endswith(f"group {g}")]) == len(d.plan.cohorts) * 2
+    days = [x.date for x in _named(t, "Maintenance watering")]
+    assert len(days) == len(set(days))                          # one watering task per day
+
+
+def test_asana_sheet_is_a_plain_import_table(tmp_path):
+    import openpyxl
+    d = dc.build(p0_plan())
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    ws = openpyxl.load_workbook(path)["asana_tasks"]
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0] == ("Name", "Due Date", "Section/Column", "Description")
+    assert len(rows) - 1 == len(d.tasks()) + dx.WATER_SLACK
+    assert all(str(r[1]).startswith("=") for r in rows[1:])        # every date is a formula
+    assert ws["B2"].number_format == "mm/dd/yyyy"
+
+
+def _asana_values(path):
+    """The asana_tasks sheet recalculated the way Excel would: [(name, date, notes)]."""
+    formulas = pytest.importorskip("formulas")
+    import numpy as np
+    import openpyxl
+    import formulas.functions.date as fdate
+
+    class ExcelWorkday:
+        """`formulas` gives #VALUE! for WORKDAY from a weekend day; Excel counts from it
+        (WORKDAY(Sat, 1) = Mon, WORKDAY(Sat, -1) = Fri). numpy's roll does the same when
+        it rolls against the direction of travel."""
+        def __getattr__(self, name):
+            return getattr(np, name)
+
+        @staticmethod
+        def busday_offset(d, n, **kw):
+            return np.busday_offset(d, n, roll="backward" if n > 0 else "forward", **kw)
+
+    real, fdate.np = fdate.np, ExcelWorkday()
+    try:
+        sol = formulas.ExcelModel().loads(str(path)).finish().calculate()
+    finally:
+        fdate.np = real
+    def val(ref):
+        key = next(k for k in sol if k.upper().endswith(ref.upper()))
+        v = sol[key].value[0][0]
+        return v.item() if hasattr(v, "item") else v
+    ws = openpyxl.load_workbook(path)["asana_tasks"]
+    cell = lambda ref: (val(f"ASANA_TASKS'!{ref}") if str(ws[ref].value or "").startswith("=")
+                        else ws[ref].value)                     # constants are not in `sol`
+    excel0 = dt.date(1899, 12, 30)
+    out = []
+    for r in range(2, ws.max_row + 1):
+        name = cell(f"A{r}")
+        if name in ("", None):
+            continue
+        day = excel0 + dt.timedelta(days=int(cell(f"B{r}")))
+        out.append((name, day, cell(f"D{r}") or ""))
+    return sorted(out, key=str)
+
+
+def _expected(d):
+    return sorted(((t.name, t.date, t.notes) for t in d.tasks()), key=str)
+
+
+def test_asana_dates_calculate(tmp_path):
+    for plan in (p0_plan(), big_plan()):
+        d = dc.build(plan)
+        path = tmp_path / "x.xlsx"
+        dx.write(d, str(path))
+        assert _asana_values(path) == _expected(d)
+
+
+def test_asana_dates_follow_timeline_edits(tmp_path):
+    import openpyxl
+    d = dc.build(p0_plan())
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["timeline"]
+    ws["B4"] = MON + dt.timedelta(days=3)                          # plant on Thursday instead
+    row_b = next(r for r in range(1, 40) if ws.cell(r, 1).value == "B")
+    ws.cell(row_b, 2).value = 26                                   # cohort B 2 days later
+    wb.save(path)
+    d.plan.planting_date = MON + dt.timedelta(days=3)
+    d.plan.cohort("B").first_n2o_dap = 26
+    want = _expected(d)
+    assert want != _expected(dc.build(p0_plan()))                 # the edit moved things
+    assert _asana_values(path) == want
+
+
 # ---------------------------------------------------------------- workbook
 def test_workbook_sheets_and_jars(tmp_path):
     import openpyxl
@@ -283,7 +438,8 @@ def test_workbook_sheets_and_jars(tmp_path):
     wb = openpyxl.load_workbook(path)
     per = [f"{k}_G{g}_{c}" for g in range(1, d.groups + 1) for c in "AB"
            for k in ("flood", "measure", "harvest")]
-    assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups", "jars",
+    assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups",
+                                                                       "asana_tasks", "jars",
                                                                        "info"]
     jars = wb["jars"]
     assert [c.value for c in jars[1]] == ["barcode", "tag"]
@@ -351,6 +507,32 @@ def test_layout_is_bright_with_a_legend(tmp_path):
         fills = {c.fill.start_color.rgb[-6:] for row in ws.iter_rows(min_row=4 + len(colours))
                  for c in row if c.value and "\n" in str(c.value)}
         assert fills <= set(legend) | {dx.SPARE_BG}
+
+
+def test_timeline_cells_carry_their_colours(tmp_path):
+    """The designed colours are plain fills too, so a viewer that does not run conditional
+    formatting still shows them; weekends are shaded in the date columns."""
+    import openpyxl
+    d = dc.build(big_plan())
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    ws = openpyxl.load_workbook(path)["timeline"]
+    hdr = next(r for r in range(1, 60) if ws.cell(r, 1).value == "Date")
+    cal0 = min(d.group_planting(g) for g in range(1, d.groups + 1))
+    cols = [(g, c) for g in range(1, d.groups + 1) for c in d.plan.cohorts]
+    colour = lambda cell: (cell.fill.fgColor.rgb or "")[-6:] if cell.fill.fill_type else ""
+    want = {"flood": dx.FLOOD_BG, "N2O": dx.N2O_BG, "Plant": dx.PLANT_BG,
+            "Treatment": dx.TREAT_BG, "Water": dx.WATER_BG}
+    seen = set()
+    for i in range(40):
+        r, day = hdr + 2 + i, cal0 + dt.timedelta(days=i)
+        assert (colour(ws.cell(r, 1)) == dx.WEEKEND_BG) == (day.weekday() >= 5)
+        for j, (g, c) in enumerate(cols):
+            text = d.day_text(g, c, day)
+            word = next((w for w in want if w.lower() in text.lower()), None)
+            assert colour(ws.cell(r, 3 + j)) == (want[word] if word else ""), (day, text)
+            seen.add(word)
+    assert {"flood", "N2O", "Plant", "Treatment", "Water"} <= seen
 
 
 def test_timeline_formulas_calculate(tmp_path):
