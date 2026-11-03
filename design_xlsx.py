@@ -22,6 +22,9 @@ Sheets
             Their dates are formulas on the timeline too.
   tags      barcode, tag text and position for label printing, by planting group.
   groups    planting groups: date, pots, measured pots per cohort; N2O load per day.
+  asana_tasks  one row per task with its due date (Name, Due Date, Section/Column,
+            Description): save as CSV and import into an Asana project. Every repeat is its
+            own row. Due dates are formulas on the timeline, so they follow its edits.
   jars      barcode + tag (tag ends with the Tn-Zn-nn position): the sheet the dosing
             station's provisioning reads (add its `admin` sheet before provisioning).
   info      the plan as entered, seed and version, so the design can be rebuilt exactly.
@@ -70,6 +73,21 @@ def _header(ws, row, values, col=1):
         c.font = HEAD; c.fill = _fill(HEAD_BG); c.alignment = CENTER; c.border = BOX
 
 
+CALENDAR_COLOURS = (("flood", FLOOD_BG, FLOOD_FG), ("N2O", N2O_BG, None),
+                    ("Plant", PLANT_BG, None), ("Treatment", TREAT_BG, None),
+                    ("Water", WATER_BG, None))
+
+
+def _paint(cell, text):
+    """A calendar cell's colour for `text`, first matching word wins (as the rules do)."""
+    for word, bg, fg in CALENDAR_COLOURS:
+        if word.lower() in text.lower():
+            cell.fill = _fill(bg)
+            if fg:
+                cell.font = Font(bold=True, color=fg)
+            return
+
+
 def _input(cell):
     cell.fill = _fill(INPUT_BG); cell.border = BOX
 
@@ -89,12 +107,29 @@ class Refs:
     def __init__(self):
         self.plant = {}            # group -> planting date cell
         self.n2o = {}              # cohort -> first N2O DAP cell
+        self.treat = ""            # treatment DAP cell
+        self.water_days = ""       # calendar column: the date when anything is watered, else ""
+        self.water_who = ""        # calendar column: who is watered that day
+        self.calendar = ""         # calendar column: the dates
 
     def flood_date(self, g, c):
         return f"{self.plant[g]}+{self.n2o[c]}-1"
 
     def n2o_date(self, g, c, off):
         return f"{self.plant[g]}+{self.n2o[c]}+{off}"
+
+    def anchor(self, a):
+        """A Task anchor (design_core.Design.anchor_date) as an Excel expression."""
+        kind, *x = a
+        if kind == "plant":
+            return self.plant[x[0]]
+        if kind == "treat":
+            return f"{self.plant[x[0]]}+{self.treat}"
+        if kind == "flood":
+            return self.flood_date(x[0], x[1])
+        if kind == "n2o":
+            return self.n2o_date(*x)
+        return f"SMALL({self.water_days},{x[0]})"                 # "water"
 
 
 # ======================================================================================
@@ -120,6 +155,7 @@ def _timeline(wb, d: dc.Design) -> Refs:
         c = ws.cell(row=4 + i, column=2, value=val)
         c.number_format = fmt; _input(c)
     P1, GAP, TREAT, WATER, CAP = "$B$4", "$B$5", "$B$6", "$B$7", "$B$8"
+    refs.treat = f"timeline!{TREAT}"
 
     top = 10
     _header(ws, top, ["Cohort", "First N2O (DAP)", "Flood (DAP)"])
@@ -154,8 +190,9 @@ def _timeline(wb, d: dc.Design) -> Refs:
     first_col = 3
     last_col = first_col + len(cols) - 1
     flood_col, n2o_col = last_col + 1, last_col + 2
+    who_col, wday_col = last_col + 3, last_col + 4          # helpers for the asana_tasks dates
     _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}" for g, c in cols]
-            + ["Flood pots", "N2O pots"])
+            + ["Flood pots", "N2O pots", "Watered", "Water day"])
     n_row = hdr + 1                                     # measured pots per column (helper)
     ws.cell(row=n_row, column=1, value="measured pots").font = NOTE
     for j, (g, c) in enumerate(cols):
@@ -167,12 +204,16 @@ def _timeline(wb, d: dc.Design) -> Refs:
     n_days = (span_end - plan.planting_date).days + 1 + 14          # room to move dates later
     start = hdr + 2
     helper = f"{L(first_col)}${n_row}:{L(last_col)}${n_row}"
+    cal0 = min(d.group_planting(g) for g in range(1, d.groups + 1))
     for i in range(n_days):
         r = start + i
         a = ws.cell(row=r, column=1,
                     value=f"=MIN($F${top + 1}:$F${top + d.groups})" if i == 0 else f"=A{r - 1}+1")
         a.number_format = "D MMM YYYY"; a.border = BOX
         b = ws.cell(row=r, column=2, value=f'=TEXT(A{r},"ddd")'); b.border = BOX
+        day = cal0 + dt.timedelta(days=i)                 # the designed date of this row
+        if day.weekday() >= 5:
+            a.fill = b.fill = _fill(WEEKEND_BG)
         for j, (g, c) in enumerate(cols):
             pr = f"$F${grp_row[g]}"
             n2o = f"$B${coh_row[c.name]}"
@@ -192,6 +233,17 @@ def _timeline(wb, d: dc.Design) -> Refs:
             f = f'=IF($A{r}={pr},"Plant",{f})'
             cell = ws.cell(row=r, column=first_col + j, value=f)
             cell.border = BOX; cell.alignment = Alignment(vertical="center")
+            _paint(cell, d.day_text(g, c, day))
+        many = d.groups > 1
+        parts = "&".join(f'IF(ISNUMBER(SEARCH("water",{L(first_col + j)}{r})),'
+                         f'"{f"G{g} " if many else ""}{c.name}, ","")'
+                         for j, (g, c) in enumerate(cols))
+        w = ws.cell(row=r, column=who_col,
+                    value=f'=IF(LEN({parts})=0,"","{"" if many else "cohorts "}"'
+                          f'&LEFT({parts},LEN({parts})-2))')
+        w.border = BOX; w.font = NOTE
+        wd = ws.cell(row=r, column=wday_col, value=f'=IF({L(who_col)}{r}="","",A{r})')
+        wd.number_format = "D MMM"; wd.border = BOX; wd.font = NOTE
         rng = f"{L(first_col)}{r}:{L(last_col)}{r}"
         for col, word in ((flood_col, "flood"), (n2o_col, "N2O")):
             t = ws.cell(row=r, column=col,
@@ -199,16 +251,24 @@ def _timeline(wb, d: dc.Design) -> Refs:
             t.border = BOX; t.alignment = CENTER; t.font = BOLD
 
     end = start + n_days - 1
+    refs.calendar = f"timeline!$A${start}:$A${end}"
+    refs.water_who = f"timeline!${L(who_col)}${start}:${L(who_col)}${end}"
+    refs.water_days = f"timeline!${L(wday_col)}${start}:${L(wday_col)}${end}"
     grid = f"{L(first_col)}{start}:{L(last_col)}{end}"
     tl = f"{L(first_col)}{start}"
-    for word, bg, fg in (("flood", FLOOD_BG, FLOOD_FG), ("N2O", N2O_BG, None),
-                         ("Plant", PLANT_BG, None), ("Treatment", TREAT_BG, None),
-                         ("Water", WATER_BG, None)):
+    for word, bg, fg in CALENDAR_COLOURS:
         ws.conditional_formatting.add(grid, FormulaRule(
             formula=[f'ISNUMBER(SEARCH("{word}",{tl}))'], fill=_fill(bg),
             font=Font(bold=True, color=fg) if fg else None, stopIfTrue=True))
+    # the cells also carry the designed colours as plain fills (for viewers that do not
+    # run conditional formatting); in Excel these last rules clear them where an edit
+    # moved the event away
+    ws.conditional_formatting.add(grid, FormulaRule(
+        formula=["TRUE"], fill=_fill("FFFFFF"), font=Font(bold=False, color="000000")))
     ws.conditional_formatting.add(f"A{start}:B{end}", FormulaRule(
-        formula=[f"WEEKDAY($A{start},2)>5"], fill=_fill(WEEKEND_BG)))
+        formula=[f"WEEKDAY($A{start},2)>5"], fill=_fill(WEEKEND_BG), stopIfTrue=True))
+    ws.conditional_formatting.add(f"A{start}:B{end}", FormulaRule(
+        formula=["TRUE"], fill=_fill("FFFFFF")))
     fl, nc = f"{L(flood_col)}{start}", f"{L(n2o_col)}{start}"
     both = f"{L(flood_col)}{start}:{L(n2o_col)}{end}"
     ws.conditional_formatting.add(both, FormulaRule(            # a flood on an N2O day
@@ -232,6 +292,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
         ws.column_dimensions[L(col)].width = max(ws.column_dimensions[L(col)].width or 0, w)
     ws.column_dimensions[L(flood_col)].width = 10
     ws.column_dimensions[L(n2o_col)].width = 10
+    ws.column_dimensions[L(who_col)].width = 24
+    ws.column_dimensions[L(wday_col)].width = 10
     ws.freeze_panes = ws.cell(row=start, column=first_col)
     return refs
 
@@ -489,6 +551,42 @@ def _groups(wb, d: dc.Design, refs: Refs) -> None:
     _widths(ws, (20, 18) + (20,) * (len(plan.cohorts) + 1))
 
 
+WATER_SLACK = 6            # spare watering rows, for dates edited later
+
+
+def _asana(wb, d: dc.Design, refs: Refs) -> None:
+    """Header + one row per task and nothing else, so File > Save As > CSV imports as is.
+    Column names are the ones Asana's CSV importer maps by itself. Every due date is a
+    formula on the timeline (WORKDAY for the working-day lags), so editing a date there
+    moves the tasks. Watering is the n-th watering day of the timeline, with a few spare
+    rows that stay blank unless edited dates add watering days."""
+    ws = wb.create_sheet("asana_tasks")
+    _header(ws, 1, ["Name", "Due Date", "Section/Column", "Description"])
+    tasks = d.tasks()
+    n_water = sum(t.anchor[0] == "water" for t in tasks)
+    extra = [dc.Task(None, "Maintenance watering", "Watering", "", ("water", n_water + k))
+             for k in range(1, WATER_SLACK + 1)]
+    for r, t in enumerate(tasks + extra, 2):
+        x = refs.anchor(t.anchor)
+        due = (x if t.lag is None else f"WORKDAY({x},{t.lag})")
+        if t.anchor[0] == "water":
+            B = f"B{r}"
+            ws.cell(row=r, column=2, value=f'=IFERROR({due},"")')
+            ws.cell(row=r, column=1, value=f'=IF({B}="","","{t.name}")')
+            ws.cell(row=r, column=3, value=f'=IF({B}="","","{t.section}")')
+            ws.cell(row=r, column=4, value=f'=IF({B}="","",INDEX({refs.water_who},'
+                                           f'MATCH({B},{refs.calendar},0)))')
+        else:
+            ws.cell(row=r, column=1, value=t.name)
+            ws.cell(row=r, column=2, value=f"={due}")
+            ws.cell(row=r, column=3, value=t.section)
+            ws.cell(row=r, column=4, value=t.notes or None)
+        ws.cell(row=r, column=2).number_format = "mm/dd/yyyy"
+    _widths(ws, (78, 12, 15, 60))
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:D{ws.max_row}"
+
+
 def _jars(wb, d: dc.Design) -> None:
     ws = wb.create_sheet("jars")
     ws.append(["barcode", "tag"])
@@ -547,6 +645,7 @@ def write(d: dc.Design, path: str) -> None:
     _cohort_sheets(wb, d, refs)
     _tags(wb, d, refs)
     _groups(wb, d, refs)
+    _asana(wb, d, refs)
     _jars(wb, d)
     _info(wb, d)
     wb.save(path)
