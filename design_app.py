@@ -500,8 +500,12 @@ def summary_text(d: dc.Design) -> str:
         coh = "  ".join(f"{k.name}:{meas[(g, k.name)]}" for k in plan.cohorts)
         out.append(f"  group {g}  plant {d.group_planting(g):%a %d %b %Y}  "
                    f"{per_g[g]:>4} pots   measured {coh}")
+    late = {k: v for k, v in d.offsets.items() if v}
+    if late:
+        out.append("  planted later so their days do not collide (days after planting kept): "
+                   + ", ".join(f"cohort {k} +{v} d" for k, v in late.items()))
     out += ["", "SCHEDULE"]
-    out.append(f"  {'':6} {'treatment':>10} {'flood':>10} " + " ".join(
+    out.append(f"  {'':6} {'plant':>10} {'treatment':>10} {'flood':>10} " + " ".join(
         f"{h} h N2O".rjust(10) for h in plan.measure_hours))
     for g in range(1, d.groups + 1):
         for k in plan.cohorts:
@@ -511,7 +515,8 @@ def summary_text(d: dc.Design) -> str:
             flood = ev.get("flood") or ev.get("Flood")
             n2o = [ev.get(f"{h} h N2O") for h in plan.measure_hours]
             fmt = lambda x, w: (f"{x:%a %d %b}" if x else "-").rjust(w)
-            out.append(f"  G{g} {k.name:<3} {fmt(treat, 10)} {fmt(flood, 10)} "
+            out.append(f"  G{g} {k.name:<3} {fmt(d.planting(g, k.name), 10)} "
+                       f"{fmt(treat, 10)} {fmt(flood, 10)} "
                        + " ".join(fmt(x, 10) for x in n2o))
     out += ["", f"N2O PER DAY (capacity {plan.max_measured_per_day})"]
     for day, n in d.calendar_load().items():

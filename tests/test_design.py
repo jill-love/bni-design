@@ -122,10 +122,10 @@ def test_gap_widens_when_cohorts_would_collide():
     d = dc.build(big_plan())
     # cohorts are 3 days apart: a 3-day gap stacks group 2's A on group 1's B (72 > 50),
     # 4 and 5 put a flood on an N2O day, 6 is the first that works
-    assert d.stagger_days == 6
-    assert dc.daily_load(d.plan, d.pots, 3)[24] > 50
-    assert dc.clash_days(d.plan, 3, 4) and dc.clash_days(d.plan, 3, 5)
-    assert not dc.clash_days(d.plan, 3, 6) and not d.warnings
+    assert d.stagger_days == 6 and d.offsets == {"A": 0, "B": 0}
+    assert dc.daily_load(d.plan, d.pots, 3, d.offsets)[24] > 50
+    assert dc.clash_days(d.plan, 3, 4, d.offsets) and dc.clash_days(d.plan, 3, 5, d.offsets)
+    assert not dc.clash_days(d.plan, 3, 6, d.offsets) and not d.warnings
 
 
 def test_never_a_flood_on_an_n2o_day():
@@ -142,10 +142,54 @@ def test_never_a_flood_on_an_n2o_day():
         assert not flood & n2o
 
 
-def test_cohorts_too_close_are_warned_not_refused():
+def test_cohorts_that_collide_are_planted_later():
+    """B's flood (DAP 22) would fall on A's 48 h N2O: B is planted one day later (it floods
+    the day after A's 48 h), keeping its days after planting; nothing is planted before
+    the planting date, nothing is warned."""
     d = dc.build(p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 23)],
                          rows=[dc.PlanRow("B73", c, "CTRL", 5) for c in "AB"]))
-    assert d.warnings and "collide" in d.warnings[0]
+    assert d.offsets == {"A": 0, "B": 1} and not d.warnings
+    b = d.plan.cohort("B")
+    assert d.planting(1, "A") == MON and d.planting(1, "B") == MON + dt.timedelta(days=1)
+    assert d.events(1, b)[0] == (d.planting(1, "B"), "Plant")
+    flood_b = d.planting(1, "B") + dt.timedelta(days=b.first_n2o_dap - 1)
+    assert ("Sacrificial harvest, flood" if any(p.role == dc.SACRIFICIAL for p in d.pots)
+            else "Flood", flood_b) in [(t, day) for day, t in d.events(1, b)]
+    assert not dc.clash_days(d.plan, 1, 0, d.offsets)
+    assert all(d.pot_planting(p) >= MON for p in d.pots)
+
+
+@pytest.mark.parametrize("days", [(21, 22), (21, 21, 22), (21, 23, 22), (20, 21, 22, 23)])
+def test_offsets_are_never_earlier_and_never_collide(days):
+    plan = p0_plan(cohorts=[dc.Cohort(chr(65 + i), n) for i, n in enumerate(days)],
+                   rows=[dc.PlanRow("B73", chr(65 + i), "CTRL", 3) for i in range(len(days))])
+    off = dc.cohort_offsets(plan)
+    assert all(v >= 0 for v in off.values())
+    assert off[min(plan.cohorts, key=lambda c: c.first_n2o_dap).name] == 0
+    assert not dc.clash_days(plan, 1, 0, off)
+    d = dc.build(plan)
+    for c in plan.cohorts:                                  # days after planting unchanged
+        p0 = d.planting(1, c.name)
+        assert d.events(1, c)[2][0] == p0 + dt.timedelta(days=c.first_n2o_dap - 1)
+
+
+def test_cohorts_that_do_not_collide_share_the_planting_day():
+    assert dc.cohort_offsets(p0_plan()) == {"A": 0, "B": 0, "C": 0}
+    t = dc.build(p0_plan()).tasks()
+    assert len(_named(t, "Label, plant seed")) == 1
+
+
+def test_planting_tasks_per_planting_day():
+    d = dc.build(p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 22), dc.Cohort("C", 27)],
+                         rows=[dc.PlanRow("B73", c, "CTRL", 4, 1) for c in "ABC"],
+                         spares_per_genotype_per_group=2))
+    assert d.offsets == {"A": 0, "B": 2, "C": 0}
+    plant = _named(d.tasks(), "Label, plant seed")
+    assert [(x.date, x.name) for x in plant] == [
+        (MON, "Label, plant seed, and initial wet-up of pots (cohorts A, C)"),
+        (MON + dt.timedelta(days=2), "Label, plant seed, and initial wet-up of pots (cohort B)")]
+    assert [x.notes for x in plant] == ["12 pots", "5 pots"]   # spares go with the first day
+    assert len(_named(d.tasks(), "If using ZeaL")) == 10
 
 
 def test_lower_capacity_means_more_groups():
@@ -403,12 +447,43 @@ def _expected(d):
     return sorted(((t.name, t.date, t.notes) for t in d.tasks()), key=str)
 
 
+def late_plan(**kw):
+    """Cohorts that collide inside one group: B and D are planted later (offsets)."""
+    return p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 22), dc.Cohort("C", 27),
+                            dc.Cohort("D", 28)],
+                   rows=[dc.PlanRow("B73", c, t, 4, 1) for c in "ABCD" for t in ("CTRL", "SN")],
+                   **kw)
+
+
 def test_asana_dates_calculate(tmp_path):
-    for plan in (p0_plan(), big_plan()):
+    for plan in (p0_plan(), big_plan(), late_plan()):
         d = dc.build(plan)
         path = tmp_path / "x.xlsx"
         dx.write(d, str(path))
         assert _asana_values(path) == _expected(d)
+
+
+def test_planting_delay_is_an_input(tmp_path):
+    """Typing a cohort's planting delay in the timeline moves that cohort's dates."""
+    import openpyxl
+    d = dc.build(late_plan())
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    wb = openpyxl.load_workbook(path)
+    ws = wb["timeline"]
+    row_b = next(r for r in range(1, 40) if ws.cell(r, 1).value == "B")
+    assert ws.cell(row_b, 4).value == d.offsets["B"] > 0
+    ws.cell(row_b, 4).value = d.offsets["B"] + 3
+    wb.save(path)
+    rows = d.tasks()                                        # the rows are fixed at writing
+    d.offsets["B"] += 3
+    moved = [(t.name, d.anchor_date(t.anchor) if t.lag is None
+              else dc.workday(d.anchor_date(t.anchor), t.lag), t.notes)
+             for t in rows if t.anchor[0] != "water"]
+    water = [("Maintenance watering", day, d.water_who(day)) for day in d.water_days_all()]
+    assert _asana_values(path) == sorted(moved + water, key=str)
+    flood_b = [day for name, day, _ in moved if name == "Flood - cohort B"]
+    assert flood_b == [d.planting(1, "B") + dt.timedelta(days=21)]
 
 
 def test_asana_dates_follow_timeline_edits(tmp_path):
@@ -449,7 +524,7 @@ def test_workbook_sheets_and_jars(tmp_path):
     assert all(re.search(r"\bT\d+-Z\d+-\d+\b", tag) for _, tag in rows)  # station reads this
     assert jars["A2"].number_format == "@"
     design = wb["design"]
-    assert design["H2"].value.startswith("=timeline!$F$")              # linked planting date
+    assert "timeline!$F$" in design["H2"].value                       # linked planting date
 
 
 def test_one_group_sheets_are_named_by_cohort(tmp_path):
@@ -478,7 +553,7 @@ def test_flood_measure_harvest_contents(tmp_path):
     assert bars == [p.barcode for p in meas]               # flood in N2O order
     sac_rows = col_a.index("FLOOD in this order") - col_a.index("SACRIFICIAL harvest first") - 2
     assert sac_rows == len(sac) == 9
-    assert fl["B2"].value.startswith("=timeline!")         # the date follows the timeline
+    assert "timeline!" in fl["B2"].value                    # the date follows the timeline
     ms = wb["measure_A"]
     heads = [r for r in range(1, ms.max_row + 1) if ms.cell(r, 1).value == "load"]
     assert len(heads) == 2                                 # 24 h and 48 h blocks
@@ -539,8 +614,11 @@ def test_timeline_formulas_calculate(tmp_path):
     """Recalculate the workbook the way Excel would (needs the `formulas` package)."""
     formulas = pytest.importorskip("formulas")
     import openpyxl
-    d = dc.build(big_plan())
-    path = tmp_path / "x.xlsx"
+    for plan in (big_plan(), late_plan()):
+        _check_timeline(formulas, openpyxl, dc.build(plan), tmp_path / "x.xlsx")
+
+
+def _check_timeline(formulas, openpyxl, d, path):
     dx.write(d, str(path))
     sol = formulas.ExcelModel().loads(str(path)).finish().calculate()
     def val(ref):

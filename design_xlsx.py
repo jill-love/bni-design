@@ -107,24 +107,29 @@ class Refs:
     def __init__(self):
         self.plant = {}            # group -> planting date cell
         self.n2o = {}              # cohort -> first N2O DAP cell
+        self.delay = {}            # cohort -> planting delay cell (days after the group date)
         self.treat = ""            # treatment DAP cell
         self.water_days = ""       # calendar column: the date when anything is watered, else ""
         self.water_who = ""        # calendar column: who is watered that day
         self.calendar = ""         # calendar column: the dates
 
+    def planting(self, g, c):
+        """Group g's planting date for cohort c (spares, c = "": the group date)."""
+        return f"({self.plant[g]}+{self.delay[c]})" if c else self.plant[g]
+
     def flood_date(self, g, c):
-        return f"{self.plant[g]}+{self.n2o[c]}-1"
+        return f"{self.planting(g, c)}+{self.n2o[c]}-1"
 
     def n2o_date(self, g, c, off):
-        return f"{self.plant[g]}+{self.n2o[c]}+{off}"
+        return f"{self.planting(g, c)}+{self.n2o[c]}+{off}"
 
     def anchor(self, a):
         """A Task anchor (design_core.Design.anchor_date) as an Excel expression."""
         kind, *x = a
         if kind == "plant":
-            return self.plant[x[0]]
+            return self.planting(x[0], x[1])
         if kind == "treat":
-            return f"{self.plant[x[0]]}+{self.treat}"
+            return f"{self.planting(x[0], x[1])}+{self.treat}"
         if kind == "flood":
             return self.flood_date(x[0], x[1])
         if kind == "n2o":
@@ -142,7 +147,9 @@ def _timeline(wb, d: dc.Design) -> Refs:
     ws["A1"] = f"{plan.name}: timeline"
     ws["A1"].font = Font(bold=True, size=14)
     ws["A2"] = ("Yellow cells are inputs: change a date or a day count and the calendar below "
-                "follows. Days are days after planting (DAP) of each pot's planting group.")
+                "follows. Days are days after planting (DAP) of each pot's planting group. "
+                "A cohort whose days would collide with another's is planted later "
+                "(Planted, days after group), so its days after planting never change.")
     ws["A2"].font = NOTE
 
     params = [("Planting date, group 1", plan.planting_date, "DD MMM YYYY"),
@@ -158,7 +165,7 @@ def _timeline(wb, d: dc.Design) -> Refs:
     refs.treat = f"timeline!{TREAT}"
 
     top = 10
-    _header(ws, top, ["Cohort", "First N2O (DAP)", "Flood (DAP)"])
+    _header(ws, top, ["Cohort", "First N2O (DAP)", "Flood (DAP)", "Planted (days after group)"])
     coh_row = {}
     for i, c in enumerate(plan.cohorts):
         r = top + 1 + i
@@ -167,6 +174,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
         ws.cell(row=r, column=1, value=c.name).font = BOLD
         _input(ws.cell(row=r, column=2, value=c.first_n2o_dap))
         ws.cell(row=r, column=3, value=f"=B{r}-1").border = BOX
+        refs.delay[c.name] = f"timeline!$D${r}"
+        _input(ws.cell(row=r, column=4, value=d.offsets.get(c.name, 0)))
 
     _header(ws, top, ["Planting group", "Planting date", "Pots", "Measured"], col=5)
     grp_row = {}
@@ -191,7 +200,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
     last_col = first_col + len(cols) - 1
     flood_col, n2o_col = last_col + 1, last_col + 2
     who_col, wday_col = last_col + 3, last_col + 4          # helpers for the asana_tasks dates
-    _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}" for g, c in cols]
+    late = lambda c: f" (planted +{d.offsets[c.name]} d)" if d.offsets.get(c.name) else ""
+    _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}{late(c)}" for g, c in cols]
             + ["Flood pots", "N2O pots", "Watered", "Water day"])
     n_row = hdr + 1                                     # measured pots per column (helper)
     ws.cell(row=n_row, column=1, value="measured pots").font = NOTE
@@ -215,7 +225,7 @@ def _timeline(wb, d: dc.Design) -> Refs:
         if day.weekday() >= 5:
             a.fill = b.fill = _fill(WEEKEND_BG)
         for j, (g, c) in enumerate(cols):
-            pr = f"$F${grp_row[g]}"
+            pr = f"($F${grp_row[g]}+$D${coh_row[c.name]})"
             n2o = f"$B${coh_row[c.name]}"
             watered = (f'AND($A{r}>{pr},$A{r}<{pr}+{n2o}-1,'
                        f'ISNUMBER(SEARCH(TEXT($A{r},"ddd"),{WATER})))')
@@ -310,7 +320,7 @@ def _design(wb, d: dc.Design, refs: Refs) -> None:
     for r, p in enumerate(d.pots, 2):
         meas = p.role == dc.MEASURED
         vals = [p.barcode, p.role, p.genotype, p.cohort or None, p.treatment or None, p.rep,
-                p.group, f"={refs.plant[p.group]}", p.table, p.zone, p.slot, p.position,
+                p.group, f"={refs.planting(p.group, p.cohort)}", p.table, p.zone, p.slot, p.position,
                 p.load if meas else None, p.column if meas else None, p.seq or None, p.label]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
@@ -517,7 +527,7 @@ def _tags(wb, d: dc.Design, refs: Refs) -> None:
                     "role", "genotype", "cohort", "treatment"])
     for r, p in enumerate(sorted(d.pots, key=lambda p: (p.group, p.barcode)), 2):
         for j, v in enumerate((p.barcode, p.label, p.position, p.group,
-                               f"={refs.plant[p.group]}", p.role, p.genotype,
+                               f"={refs.planting(p.group, p.cohort)}", p.role, p.genotype,
                                p.cohort or None, p.treatment or None)):
             ws.cell(row=r, column=1 + j, value=v)
         ws.cell(row=r, column=1).number_format = "@"
@@ -623,9 +633,9 @@ def _info(wb, d: dc.Design) -> None:
         ws.append([k, v])
         ws.cell(row=ws.max_row, column=1).font = BOLD
     ws.append([])
-    ws.append(["cohort", "first N2O DAP"])
+    ws.append(["cohort", "first N2O DAP", "planted, days after group"])
     for cc in plan.cohorts:
-        ws.append([cc.name, cc.first_n2o_dap])
+        ws.append([cc.name, cc.first_n2o_dap, d.offsets.get(cc.name, 0)])
     ws.append([])
     ws.append(["genotype", "cohort", "treatment", "reps", "sacrificial"])
     for pr in plan.rows:
