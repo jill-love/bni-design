@@ -566,22 +566,41 @@ def test_flood_measure_harvest_contents(tmp_path):
     assert tags.max_row - 1 == len(d.pots)
 
 
-def test_layout_is_bright_with_a_legend(tmp_path):
+def test_layout_colours_cohort_family_and_treatment_shade(tmp_path):
     import openpyxl
-    for plan, by in ((p0_plan(), "cohort"), (big_plan(), "group")):
+    for plan in (p0_plan(), big_plan()):
         d = dc.build(plan)
         path = tmp_path / "l.xlsx"
         dx.write(d, str(path))
         ws = openpyxl.load_workbook(path)["layout"]
-        assert ws["A3"].value == f"Colour = {'planting group' if by == 'group' else 'cohort'}"
-        got_by, colours = dx.layout_colours(d)
-        assert got_by == by
-        legend = {ws.cell(r, 1).fill.start_color.rgb[-6:]: ws.cell(r, 2).value
-                  for r in range(4, 4 + len(colours))}
-        assert set(legend) == {h.upper() for h in colours.values()}
-        fills = {c.fill.start_color.rgb[-6:] for row in ws.iter_rows(min_row=4 + len(colours))
-                 for c in row if c.value and "\n" in str(c.value)}
-        assert fills <= set(legend) | {dx.SPARE_BG}
+        colours = dx.layout_colours(d)
+        trts = dx.treatments(d)
+        assert set(colours) == {(c.name, t) for c in d.plan.cohorts for t in trts}
+        assert len(set(colours.values())) == len(colours)          # every combination differs
+        for ci, c in enumerate(d.plan.cohorts):                    # one family per cohort
+            ramp = dx.FAMILIES[ci][1]
+            shades = [ramp.index(colours[(c.name, t)][0]) for t in trts]
+            assert shades == sorted(shades) and len(set(shades)) == len(trts)  # light to dark
+        legend = {ws.cell(r, col).fill.start_color.rgb[-6:]
+                  for r in range(5, 5 + len(d.plan.cohorts))
+                  for col in range(2, 2 + len(trts))}
+        assert legend == {bg for bg, _ in colours.values()}
+        at = {(p.table, p.zone, p.slot): p for p in d.pots}
+        seen = 0
+        for row in ws.iter_rows():
+            for cell in row:
+                v = str(cell.value or "")
+                p = next((p for p in d.pots if v.endswith("\n" + p.barcode)), None)
+                if p is None:
+                    continue
+                seen += 1
+                want = SPARE if p.role == dc.SPARE else colours[(p.cohort, p.treatment)][0]
+                assert cell.fill.start_color.rgb[-6:] == want, (p.barcode, v)
+                assert v.startswith(f"G{p.group}  ") == (d.groups > 1 and p.role != dc.SPARE)
+        assert seen == len(d.pots)
+
+
+SPARE = dx.SPARE_BG
 
 
 def test_timeline_cells_carry_their_colours(tmp_path):
