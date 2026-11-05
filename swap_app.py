@@ -62,7 +62,8 @@ class SwapWindow(QtWidgets.QMainWindow):
         self.failed_info = QtWidgets.QLabel(); self.failed_info.setStyleSheet(f"color:{MUTED};")
         fl.addRow("", self.failed_info)
         self.spare = QtWidgets.QComboBox(); self.spare.setEditable(True)
-        self.spare.setToolTip("Spares of the same genotype and planting group. Scan one, or pick.")
+        self.spare.setToolTip("Only spares of the same genotype, planted the same day, are "
+                              "listed; any other is refused. Scan one, or pick.")
         self.spare.lineEdit().returnPressed.connect(self._add)
         fl.addRow("Spare that replaces it", self.spare)
         self.day = QtWidgets.QDateEdit(QtCore.QDate.currentDate()); self.day.setCalendarPopup(True)
@@ -193,10 +194,14 @@ class SwapWindow(QtWidgets.QMainWindow):
                                      "replaced")
             return
         sp = S.eligible_spares(self.design, f)
-        self.failed_info.setText(f"{f.label} at {f.position}, planting group {f.group}: "
-                                 f"{len(sp)} spare(s) can replace it")
+        day = S.planted(self.design, f)
+        self.failed_info.setText(
+            f"{f.label} ({f.genotype}) at {f.position}, planted {day:%a %d %b}: "
+            + (f"{len(sp)} spare(s) of {f.genotype} planted that day can replace it" if sp
+               else f"no unused {f.genotype} spare was planted {day:%a %d %b}"))
         for p in sp:
-            self.spare.addItem(f"{p.barcode}   {p.label} at {p.position}", p.barcode)
+            self.spare.addItem(f"{p.barcode}   {p.label} at {p.position}, planted "
+                               f"{S.planted(self.design, p):%a %d %b}", p.barcode)
         self.spare.setCurrentIndex(-1)
         if focus:                       # Return (or the scanner's) moves on to the spare
             self.spare.setFocus()

@@ -92,7 +92,17 @@ def read_design_map(path: str) -> tuple[dc.Design, list[dc.Swap]]:
         groups, stagger, delays = doc["groups"], doc["stagger_days"], doc["offsets"]
     else:
         plan, groups, stagger, delays = _plan_from_info(wb)
-    delays = delays or dc.cohort_offsets(plan)
+    delays = dict(delays or dc.cohort_offsets(plan))
+    if "timeline" in wb.sheetnames:     # planting delays typed over in the timeline win
+        tl = wb["timeline"]
+        names = {c.name for c in plan.cohorts}
+        head = next((r for r in range(1, 40)
+                     if str(tl.cell(r, 4).value or "").startswith("Planted")), None)
+        if head:
+            for r in range(head + 1, head + 1 + len(names)):
+                name, v = str(tl.cell(r, 1).value or ""), tl.cell(r, 4).value
+                if name in names and isinstance(v, (int, float)):
+                    delays[name] = int(v)
 
     ws = wb["design"]
     head = [str(c.value) for c in ws[1]]
@@ -111,7 +121,8 @@ def read_design_map(path: str) -> tuple[dc.Design, list[dc.Swap]]:
             group_in_tag=groups > 1, load=get(r, "n2o_load", int) or 0,
             column=get(r, "n2o_column", int) or 0, seq=get(r, "seq", int) or 0,
             table=get(r, "table", int), zone=get(r, "zone", int), slot=get(r, "slot", int),
-            was=get(r, "role_before") or "", swap=get(r, "swapped_with") or ""))
+            was=get(r, "role_before") or "", swap=get(r, "swapped_with") or "",
+            planted_with=get(r, "planted_with") or ""))
     load = dc.daily_load(plan, pots, stagger, delays)
     d = dc.Design(plan, pots, groups, stagger, load, [], delays)
 
@@ -138,10 +149,17 @@ def pot(d: dc.Design, barcode: str) -> dc.Pot:
     return p
 
 
+def planted(d: dc.Design, p: dc.Pot) -> dt.date:
+    """The day the pot was planted: its group's date, plus its cohort's planting delay
+    (a cohort planted later so its days do not collide). Spares: the group's date."""
+    return d.pot_planting(p)
+
+
 def eligible_spares(d: dc.Design, failed: dc.Pot) -> list[dc.Pot]:
-    """Spares that may replace `failed`: same genotype, same planting group, not used."""
+    """Spares that may replace `failed`: same genotype, planted the same day, not used."""
+    day = planted(d, failed)
     return [p for p in d.pots if p.role == dc.SPARE and p.genotype == failed.genotype
-            and p.group == failed.group]
+            and p.group == failed.group and planted(d, p) == day]
 
 
 def swap(d: dc.Design, failed_bc: str, spare_bc: str, day: dt.date | None = None,
@@ -160,9 +178,11 @@ def swap(d: dc.Design, failed_bc: str, spare_bc: str, day: dt.date | None = None
     if s.genotype != f.genotype:
         raise SwapError(f"{s.barcode} is {s.genotype}, {f.barcode} is {f.genotype}: a spare "
                         f"only replaces a pot of its own genotype")
-    if s.group != f.group:
-        raise SwapError(f"{s.barcode} was planted with group {s.group}, {f.barcode} with "
-                        f"group {f.group}: a spare only replaces a pot of its own age")
+    if s.group != f.group or planted(d, s) != planted(d, f):
+        raise SwapError(f"{s.barcode} was planted {planted(d, s):%a %d %b} (group {s.group}), "
+                        f"{f.barcode} {planted(d, f):%a %d %b} (group {f.group}"
+                        + (f", cohort {f.cohort} planted later" if d.offsets.get(f.cohort)
+                           else "") + "): a spare only replaces a pot of its own age")
     for a in ("role", "cohort", "treatment", "rep", "load", "column", "seq"):
         setattr(s, a, getattr(f, a))
     s.swap, s.group_in_tag = f.barcode, False

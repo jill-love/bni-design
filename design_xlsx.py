@@ -336,23 +336,31 @@ def _timeline(wb, d: dc.Design) -> Refs:
 # ======================================================================================
 # DESIGN, LAYOUT
 # ======================================================================================
+def _planted(refs: Refs, p: dc.Pot) -> str:
+    """The pot's planting date as a formula: its cohort's, or for a spare the day of the
+    cohorts it was planted with (the group's date when that is empty)."""
+    if p.role in (dc.SPARE, dc.DISCARDED) and p.planted_with:
+        return refs.planting(p.group, p.planted_with.split("+")[0])
+    return refs.planting(p.group, p.cohort)
+
+
 def _design(wb, d: dc.Design, refs: Refs) -> None:
     ws = wb.create_sheet("design")
     cols = ["barcode", "role", "genotype", "cohort", "treatment", "rep", "planting_group",
             "planting_date", "table", "zone", "slot", "position", "n2o_load", "n2o_column",
-            "seq", "tag", "role_before", "swapped_with"]
+            "seq", "tag", "role_before", "swapped_with", "planted_with"]
     _header(ws, 1, cols)
     for r, p in enumerate(d.pots, 2):
         meas = p.role == dc.MEASURED
         vals = [p.barcode, p.role, p.genotype, p.cohort or None, p.treatment or None, p.rep,
-                p.group, f"={refs.planting(p.group, p.cohort)}", p.table, p.zone, p.slot, p.position,
+                p.group, f"={_planted(refs, p)}", p.table, p.zone, p.slot, p.position,
                 p.load if meas else None, p.column if meas else None, p.seq or None, p.label,
-                p.was or None, p.swap or None]
+                p.was or None, p.swap or None, p.planted_with or None]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         ws.cell(row=r, column=1).number_format = "@"
         ws.cell(row=r, column=8).number_format = "DD MMM YYYY"
-    _widths(ws, (16, 13, 12, 8, 11, 6, 9, 13, 6, 6, 6, 11, 9, 10, 6, 24, 12, 16))
+    _widths(ws, (16, 13, 12, 8, 11, 6, 9, 13, 6, 6, 6, 11, 9, 10, 6, 24, 12, 16, 12))
     ws.freeze_panes = "B2"
     ws.auto_filter.ref = f"A1:{L(len(cols))}{len(d.pots) + 1}"
 
@@ -425,8 +433,8 @@ def _layout(wb, d: dc.Design) -> None:
         sw = ws.cell(row=r, column=1, value="SPARE")
         sw.fill = _fill(SPARE_BG); sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
         ws.cell(row=r, column=2, value=(
-            "grey: spare, no cohort or treatment yet; replaces a failed pot of its own "
-            "planting group"))
+            "grey: spare, no cohort or treatment yet; replaces a failed pot of its genotype "
+            "planted the same day"))
         r += 1
     if any(not p.active for p in d.pots) or any(p.swap for p in d.pots):
         sw = ws.cell(row=r, column=1, value="FAILED")
@@ -596,7 +604,7 @@ def _tags(wb, d: dc.Design, refs: Refs) -> None:
                     "role", "genotype", "cohort", "treatment"])
     for r, p in enumerate(sorted(d.pots, key=lambda p: (p.group, p.barcode)), 2):
         for j, v in enumerate((p.barcode, p.label, p.position, p.group,
-                               f"={refs.planting(p.group, p.cohort)}", p.role, p.genotype,
+                               f"={_planted(refs, p)}", p.role, p.genotype,
                                p.cohort or None, p.treatment or None)):
             ws.cell(row=r, column=1 + j, value=v)
         ws.cell(row=r, column=1).number_format = "@"

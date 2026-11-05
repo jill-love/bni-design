@@ -235,3 +235,82 @@ def test_window_adds_removes_and_saves(tmp_path):
     assert [s.failed for s in S.read_design_map(path)[1]] == [f1.barcode]
     assert w.saved and not w.pending
     w.close()
+
+
+# ---------------------------------------------------------------- planting date
+def _late_map(tmp_path):
+    """Cohort B collides with A and is planted 2 days after the group (and its spares)."""
+    plan = p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 22)],
+                   rows=[dc.PlanRow(g, c, "CTRL", 3, 1) for g in ("B73", "Mo17") for c in "AB"],
+                   spares_per_genotype_per_group=2)
+    return _map(tmp_path, plan)
+
+
+def test_a_spare_only_replaces_a_pot_planted_the_same_day(tmp_path):
+    d, path = _late_map(tmp_path)
+    assert d.offsets == {"A": 0, "B": 2}
+    on_day = _first(d, role=dc.MEASURED, cohort="A", genotype="B73")
+    late = _first(d, role=dc.MEASURED, cohort="B", genotype="B73")
+    early_spare = _first(d, role=dc.SPARE, genotype="B73", planted_with="A")
+    late_spare = _first(d, role=dc.SPARE, genotype="B73", planted_with="B")
+    assert S.planted(d, early_spare) == S.planted(d, on_day) != S.planted(d, late)
+    assert S.planted(d, late_spare) == S.planted(d, late)
+    assert {p.planted_with for p in S.eligible_spares(d, late)} == {"B"}
+    assert {p.planted_with for p in S.eligible_spares(d, on_day)} == {"A"}
+    with pytest.raises(S.SwapError, match="planted .* own age"):
+        S.swap(d, late.barcode, early_spare.barcode)
+    assert late.role == dc.MEASURED and early_spare.role == dc.SPARE   # nothing changed
+    S.swap(d, late.barcode, late_spare.barcode)
+    S.swap(d, on_day.barcode, early_spare.barcode)
+
+
+def test_every_planting_day_has_its_own_spares(tmp_path):
+    d, path = _late_map(tmp_path)                       # 2 per genotype per planting day
+    sp = [p for p in d.pots if p.role == dc.SPARE]
+    assert len(sp) == 2 * 2 * 2                         # genotypes x days x 2
+    assert sorted({p.label.split("-SPARE")[0] for p in sp}) == ["B73-A", "B73-B",
+                                                                "Mo17-A", "Mo17-B"]
+    d2, _ = S.read_design_map(path)
+    assert {(p.barcode, p.planted_with) for p in d2.pots if p.role == dc.SPARE} == \
+           {(p.barcode, p.planted_with) for p in sp}
+    wb = openpyxl.load_workbook(path)
+    tags = {r[0]: r[1] for r in wb["jars"].iter_rows(min_row=2, values_only=True)}
+    assert all("-A-SPARE-" in tags[p.barcode] or "-B-SPARE-" in tags[p.barcode] for p in sp)
+
+
+def test_a_spare_only_replaces_its_own_genotype(tmp_path):
+    d, _ = _late_map(tmp_path)
+    f = _first(d, role=dc.MEASURED, cohort="A", genotype="B73")
+    assert all(p.genotype == "B73" for p in S.eligible_spares(d, f))
+    with pytest.raises(S.SwapError, match="own genotype"):
+        S.swap(d, f.barcode, _first(d, role=dc.SPARE, genotype="Mo17", planted_with="A").barcode)
+
+
+def test_planting_delay_edited_in_the_timeline_counts(tmp_path):
+    d, path = _late_map(tmp_path)
+    wb = openpyxl.load_workbook(path)
+    tl = wb["timeline"]
+    row_b = next(r for r in range(1, 40) if tl.cell(r, 1).value == "B")
+    tl.cell(row_b, 4).value = 0                                     # B planted with A after all
+    wb.save(path)
+    d2, _ = S.read_design_map(path)
+    late = _first(d2, role=dc.MEASURED, cohort="B", genotype="B73")
+    assert d2.offsets["B"] == 0 and S.eligible_spares(d2, late)
+
+
+def test_window_lists_only_spares_planted_that_day(tmp_path):
+    from PySide6 import QtWidgets
+    import swap_app
+    d, path = _late_map(tmp_path)
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = swap_app.SwapWindow(path)
+    late = _first(w.design, role=dc.MEASURED, cohort="B", genotype="B73")
+    w.failed.setText(late.barcode); w._failed_entered(focus=True)
+    listed = [w.spare.itemData(i) for i in range(w.spare.count())]
+    want = {p.barcode for p in w.design.pots if p.role == dc.SPARE and p.genotype == "B73"
+            and p.planted_with == "B"}
+    assert set(listed) == want and "planted" in w.failed_info.text()
+    early = _first(w.design, role=dc.SPARE, genotype="B73", planted_with="A")
+    w.spare.setEditText(early.barcode); w._add()                     # scanned anyway
+    assert w.pending == [] and "own age" in w.banner.text()
+    w.close()

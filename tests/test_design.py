@@ -188,7 +188,7 @@ def test_planting_tasks_per_planting_day():
     assert [(x.date, x.name) for x in plant] == [
         (MON, "Label, plant seed, and initial wet-up of pots (cohorts A, C)"),
         (MON + dt.timedelta(days=2), "Label, plant seed, and initial wet-up of pots (cohort B)")]
-    assert [x.notes for x in plant] == ["12 pots", "5 pots"]   # spares go with the first day
+    assert [x.notes for x in plant] == ["12 pots", "7 pots"]   # each day has its own spares
     assert len(_named(d.tasks(), "If using ZeaL")) == 10
 
 

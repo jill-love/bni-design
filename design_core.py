@@ -14,8 +14,10 @@ builds one row per pot, then:
      24 h and 48 h N2O days, then the next group's flood. The split is random but
      balanced: every cell (genotype x cohort x treatment x role) is dealt across the
      groups as evenly as it divides. Spares come after: `spares_per_genotype_per_group`
-     of every genotype in every group, because a spare can only replace a pot planted
-     the same day. They are never measured, so they never change the number of groups.
+     of every genotype on every PLANTING DAY of every group (a group with a cohort
+     planted later has two planting days), because a spare can only replace a pot
+     planted the same day. They are never measured, so they never change the number of
+     groups.
   2. BENCH LAYOUT. Pots are dealt across the available tables, then the zones of each
      table, keeping every cell, and every planting group, as evenly spread as it
      divides; slots within a zone are random (empty slots too). Position text is
@@ -287,8 +289,9 @@ def count_pots(plan: Plan, groups: int = 0) -> int:
     """Measured + sacrificial pots, plus the spares for `groups` planting groups (0: the
     spares are left out, the number of groups not being known yet)."""
     rows = [r for r in plan.rows if r.genotype.strip()]
+    days = len(planting_days(plan, cohort_offsets(plan))) if groups and plan.cohorts else 1
     return (sum(max(0, r.reps) + max(0, r.sacrificial) for r in rows)
-            + plan.spares_per_genotype_per_group * len(genotypes(plan)) * groups)
+            + plan.spares_per_genotype_per_group * len(genotypes(plan)) * groups * days)
 
 
 # ======================================================================================
@@ -313,6 +316,8 @@ class Pot:
     was: str = ""                  # FAILED: the role it had (MEASURED / SACRIFICIAL)
     swap: str = ""                 # the other pot of its swap: the spare that replaced a
                                    # FAILED pot, or the failed pot a promoted spare replaces
+    planted_with: str = ""         # spares, when a group plants on several days: the
+                                   # cohorts planted that day, e.g. "B" or "A+C"
 
     @property
     def active(self) -> bool:
@@ -334,7 +339,8 @@ class Pot:
         role = self.was if self.role == FAILED else self.role
         if role in (SPARE, DISCARDED):
             g = f"G{self.group}-" if self.group_in_tag else ""
-            return (f"{self.genotype}-{g}SPARE-{self.rep:02d}"
+            day = f"{self.planted_with}-" if self.planted_with else ""
+            return (f"{self.genotype}-{g}{day}SPARE-{self.rep:02d}"
                     + ("-DISCARDED" if role == DISCARDED else ""))
         parts = [self.genotype, self.cohort] + ([self.treatment] if self.treatment else [])
         rep = f"r{self.rep:02d}" if role == MEASURED else f"SAC{self.rep}"
@@ -357,13 +363,27 @@ def make_pots(plan: Plan) -> list[Pot]:
     return pots
 
 
-def add_spares(plan: Plan, pots: list[Pot], groups: int) -> None:
-    """`spares_per_genotype_per_group` spares of every genotype in every planting group."""
+def planting_days(plan: Plan, offsets: dict[str, int]) -> list[list[str]]:
+    """A group's planting days in order, each the cohorts planted that day (one day when
+    no cohort is planted later)."""
+    days = defaultdict(list)
+    for c in plan.cohorts:
+        days[offsets.get(c.name, 0)].append(c.name)
+    return [days[k] for k in sorted(days)]
+
+
+def add_spares(plan: Plan, pots: list[Pot], groups: int,
+               offsets: dict[str, int] | None = None) -> None:
+    """`spares_per_genotype_per_group` spares of every genotype on every planting day of
+    every planting group: a spare only replaces a pot planted the same day."""
+    days = planting_days(plan, offsets or {})
     for g in range(1, groups + 1):
-        for geno in genotypes(plan):
-            for k in range(1, plan.spares_per_genotype_per_group + 1):
-                pots.append(Pot(role=SPARE, genotype=geno, rep=k, group=g,
-                                group_in_tag=groups > 1))
+        for day in days:
+            for geno in genotypes(plan):
+                for k in range(1, plan.spares_per_genotype_per_group + 1):
+                    pots.append(Pot(role=SPARE, genotype=geno, rep=k, group=g,
+                                    group_in_tag=groups > 1,
+                                    planted_with="+".join(day) if len(days) > 1 else ""))
 
 
 def _deal(pots: list[Pot], bins: list, rng: random.Random, key_extra=None,
@@ -646,6 +666,10 @@ class Design:
         return sorted(days.items())
 
     def pot_planting(self, p: Pot) -> dt.date:
+        """A spare is planted with the cohorts named in `planted_with` (the group's
+        first day when that is empty); every other pot with its cohort."""
+        if p.role in (SPARE, DISCARDED) and p.planted_with:
+            return self.planting(p.group, p.planted_with.split("+")[0])
         return self.planting(p.group, p.cohort)
 
     def events(self, g: int, cohort: Cohort) -> list[tuple[dt.date, str]]:
@@ -767,8 +791,7 @@ class Design:
                 tag = ([f"group {g}"] if many else []) \
                     + ([f"cohort{'s' if len(cs) > 1 else ''} {', '.join(cs)}"] if len(days) > 1 else [])
                 sfx = f" ({', '.join(tag)})" if tag else ""
-                n = sum(p.group == g and (p.cohort in cs or (p.role == SPARE and day == days[0][0]))
-                        for p in self.pots)
+                n = sum(p.group == g and self.pot_planting(p) == day for p in self.pots)
                 at = ("plant", g, cs[0])
                 add(at, lag["prefill"], f"Pre-fill pots with weighed soil{sfx}", "Setup",
                     f"{n} pots")
@@ -847,14 +870,16 @@ def build(plan: Plan) -> Design:
     pots = make_pots(plan)
     offsets = cohort_offsets(plan)
     groups, stagger, load, warnings = choose_groups(plan, pots, rng, offsets)
-    add_spares(plan, pots, groups)
+    add_spares(plan, pots, groups, offsets)
     if len(pots) > plan.capacity:
         n_sp = len(pots) - count_pots(plan)
+        days = len(planting_days(plan, offsets))
         raise PlanError(
             f"{len(pots)} pots do not fit: {count_pots(plan)} planned + {n_sp} spares "
             f"({plan.spares_per_genotype_per_group} x {len(genotypes(plan))} genotypes x "
-            f"{groups} planting groups); the bench holds {plan.capacity}. Lower the spares "
-            f"or add tables, zones or slots.")
+            f"{groups} planting groups" + (f" x {days} planting days" if days > 1 else "")
+            + f"); the bench holds {plan.capacity}. Lower the spares or add tables, zones "
+            f"or slots.")
     place(plan, pots, rng)
     order_n2o(plan, pots, rng)
     # barcodes in random order, so a barcode says nothing about the pot's treatment
