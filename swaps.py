@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from collections import Counter
 import os
 import shutil
 
@@ -79,7 +80,42 @@ def _plan_from_info(wb) -> tuple[dc.Plan, int, int, dict | None]:
         max_measured_per_day=int(kv["max N2O per day (capacity)"]),
         spares_per_genotype_per_group=int(kv.get("spares per genotype per planting group", 0)),
         cohorts=cohorts, rows=prow, **soil)
-    return plan, int(kv["planting groups"]), int(kv["days between groups"]), delays or None
+    if "planting rounds" in kv:          # made after groups became planting dates
+        return (plan, int(kv["planting rounds"]), int(kv["days between rounds"]),
+                delays or None, True)
+    return plan, int(kv["planting groups"]), int(kv["days between groups"]), delays or None, False
+
+
+def _round_order(plan, n_rounds, stagger, delays):
+    """[(round, delay)] for planting groups 1, 2, ... as dc.split_groups numbers them."""
+    keys = sorted({delays.get(c.name, 0) for c in plan.cohorts}) or [0]
+    return sorted(((r, o) for r in range(1, n_rounds + 1) for o in keys),
+                  key=lambda ro: ((ro[0] - 1) * stagger + ro[1], ro[0]))
+
+
+def _split_legacy(plan, pots, n_rounds, stagger, delays):
+    """Maps made before planting groups were planting dates: a group (now a round) could
+    plant on two days. Each (round, delay) becomes its own group, as dc.split_groups does;
+    a spare goes with the cohorts it was planted with."""
+    rounds = _round_order(plan, n_rounds, stagger, delays)
+    number = {ro: k for k, ro in enumerate(rounds, 1)}
+    for p in pots:
+        cohort = p.cohort or (p.planted_with.split("+")[0] if p.planted_with else "")
+        p.group = number[(p.group, delays.get(cohort, 0))]
+        p.group_in_tag = len(rounds) > 1
+    return len(rounds), rounds
+
+
+def _load(d: dc.Design) -> Counter:
+    """{days after the first planting: N2O measurements}, from the pots as they are."""
+    out = Counter()
+    for p in d.pots:
+        if p.role == dc.MEASURED:
+            c = d.plan.cohort(p.cohort)
+            base = (d.group_planting(p.group) - d.plan.planting_date).days + c.first_n2o_dap
+            for off in c.offsets:
+                out[base + off] += 1
+    return out
 
 
 def read_design_map(path: str) -> tuple[dc.Design, list[dc.Swap]]:
@@ -90,10 +126,15 @@ def read_design_map(path: str) -> tuple[dc.Design, list[dc.Swap]]:
         doc = json.loads("".join(str(r[0]) for r in ws.iter_rows(values_only=True) if r[0]))
         plan = dc.Plan.from_dict(doc["plan"])
         groups, stagger, delays = doc["groups"], doc["stagger_days"], doc["offsets"]
+        rounds = [tuple(r) for r in doc.get("rounds", [])]
     else:
-        plan, groups, stagger, delays = _plan_from_info(wb)
+        plan, groups, stagger, delays, by_date = _plan_from_info(wb)
+        rounds = []
+        if by_date:                     # pots already carry their planting group
+            rounds = _round_order(plan, groups, stagger, delays or dc.cohort_offsets(plan))
+            groups = len(rounds)
     delays = dict(delays or dc.cohort_offsets(plan))
-    if "timeline" in wb.sheetnames:     # planting delays typed over in the timeline win
+    if not rounds and "timeline" in wb.sheetnames:  # older maps: delays typed over win
         tl = wb["timeline"]
         names = {c.name for c in plan.cohorts}
         head = next((r for r in range(1, 40)
@@ -123,8 +164,10 @@ def read_design_map(path: str) -> tuple[dc.Design, list[dc.Swap]]:
             table=get(r, "table", int), zone=get(r, "zone", int), slot=get(r, "slot", int),
             was=get(r, "role_before") or "", swap=get(r, "swapped_with") or "",
             planted_with=get(r, "planted_with") or ""))
-    load = dc.daily_load(plan, pots, stagger, delays)
-    d = dc.Design(plan, pots, groups, stagger, load, [], delays)
+    if not rounds:
+        groups, rounds = _split_legacy(plan, pots, groups, stagger, delays)
+    d = dc.Design(plan, pots, groups, stagger, Counter(), [], delays, rounds)
+    d.load = _load(d)
 
     swaps = []
     if "swaps" in wb.sheetnames:
