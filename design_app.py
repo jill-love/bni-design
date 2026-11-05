@@ -201,9 +201,13 @@ class DesignWindow(QtWidgets.QMainWindow):
         left.addWidget(dos)
 
         coh = QtWidgets.QGroupBox("Cohorts (time trial)"); cl = QtWidgets.QVBoxLayout(coh)
-        self.cohorts = SheetTable(("Cohort", "First N2O (days after planting)"), numeric_cols=(1,))
+        self.cohorts = SheetTable(("Cohort", "First N2O\n(days after planting)",
+                                   "N2O times\n(h after flood)"), numeric_cols=(1,))
         self.cohorts.setMinimumHeight(140)
-        self.cohorts.setColumnWidth(0, 80)
+        self.cohorts.setColumnWidth(0, 60); self.cohorts.setColumnWidth(1, 130)
+        self.cohorts.setToolTip("N2O times: whole days after the flood, e.g. 24, 48, 72. "
+                                "The flood is the first time before the first N2O day; "
+                                "harvest follows the last. Blank: 24, 48.")
         cl.addWidget(self.cohorts)
         cb = QtWidgets.QHBoxLayout()
         add_c = QtWidgets.QPushButton("Add cohort"); add_c.clicked.connect(self._add_cohort)
@@ -302,6 +306,7 @@ class DesignWindow(QtWidgets.QMainWindow):
         self.cohorts.setRowCount(len(p.cohorts))
         for r, c in enumerate(p.cohorts):
             self.cohorts.set_text(r, 0, c.name); self.cohorts.set_text(r, 1, c.first_n2o_dap)
+            self.cohorts.set_text(r, 2, ", ".join(str(h) for h in c.measure_hours))
         self.table.setRowCount(len(p.rows) + BLANK_ROWS)
         for r, row in enumerate(p.rows):
             for c, val in enumerate((row.genotype, row.cohort, row.treatment, row.reps,
@@ -324,7 +329,14 @@ class DesignWindow(QtWidgets.QMainWindow):
         for r in range(self.cohorts.rowCount()):
             n = self.cohorts.text(r, 0)
             if n:
-                cohorts.append(dc.Cohort(n, num(self.cohorts, r, 1, "first N2O day")))
+                t = self.cohorts.text(r, 2).replace(";", ",").replace("h", "")
+                try:
+                    hours = tuple(int(float(x)) for x in t.replace(",", " ").split()) \
+                        or dc.MEASURE_HOURS
+                except ValueError:
+                    raise dc.PlanError(f"cohort {n}: N2O times are not numbers: {t!r} "
+                                       f"(e.g. 24, 48, 72)")
+                cohorts.append(dc.Cohort(n, num(self.cohorts, r, 1, "first N2O day"), hours))
         rows = []
         for r in range(self.table.rowCount()):
             g = self.table.text(r, 0)
@@ -400,6 +412,8 @@ class DesignWindow(QtWidgets.QMainWindow):
         name = chr(ord("A") + r) if r < 26 else f"C{r + 1}"
         self.cohorts.set_text(r, 0, name)
         self.cohorts.set_text(r, 1, int(last) + 3 if last.isdigit() else 21)
+        prev = self.cohorts.text(r - 1, 2) if r else ""
+        self.cohorts.set_text(r, 2, prev or ", ".join(map(str, dc.MEASURE_HOURS)))
 
     def _remove_rows(self, tbl):
         rows = sorted({i.row() for i in tbl.selectedIndexes()}, reverse=True)
@@ -541,15 +555,16 @@ def summary_text(d: dc.Design) -> str:
         out.append("  planted later so their days do not collide (days after planting kept): "
                    + ", ".join(f"cohort {k} +{v} d" for k, v in late.items()))
     out += ["", "SCHEDULE"]
+    hours = sorted({h for k in plan.cohorts for h in k.measure_hours})   # every cohort's times
     out.append(f"  {'':6} {'plant':>10} {'treatment':>10} {'flood':>10} " + " ".join(
-        f"{h} h N2O".rjust(10) for h in plan.measure_hours))
+        f"{h} h N2O".rjust(10) for h in hours))
     for g in range(1, d.groups + 1):
         for k in plan.cohorts:
             ev = dict((t.split(",")[0].replace("Sacrificial harvest", "flood").strip(), day)
                       for day, t in d.events(g, k))
             treat = ev.get("Treatment")
             flood = ev.get("flood") or ev.get("Flood")
-            n2o = [ev.get(f"{h} h N2O") for h in plan.measure_hours]
+            n2o = [ev.get(f"{h} h N2O") for h in hours]
             fmt = lambda x, w: (f"{x:%a %d %b}" if x else "-").rjust(w)
             out.append(f"  G{g} {k.name:<3} {fmt(d.planting(g, k.name), 10)} "
                        f"{fmt(treat, 10)} {fmt(flood, 10)} "
