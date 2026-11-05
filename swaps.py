@@ -191,11 +191,17 @@ def swap(d: dc.Design, failed_bc: str, spare_bc: str, day: dt.date | None = None
     return dc.Swap(day or dt.date.today(), f.barcode, s.barcode, s.label, note)
 
 
-def discard_spares(d: dc.Design) -> list[str]:
-    """Every spare still unused becomes DISCARDED (no longer grown). Returns the barcodes."""
+SPARE_WEEK = 7          # days a planting day's spares are kept before they may be discarded
+
+
+def discard_spares(d: dc.Design, on: dt.date | None = None) -> list[str]:
+    """Unused spares become DISCARDED (no longer grown). With `on` (the day of the
+    swaps), only spares planted at least SPARE_WEEK days before it: a later planting
+    day keeps its spares for its own week. Returns the barcodes."""
     out = []
     for p in d.pots:
-        if p.role == dc.SPARE:
+        if p.role == dc.SPARE and (on is None
+                                   or (on - planted(d, p)).days >= SPARE_WEEK):
             p.role = dc.DISCARDED
             out.append(p.barcode)
     return out

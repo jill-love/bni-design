@@ -336,10 +336,11 @@ def test_every_task_kind_is_listed_once_per_repeat():
     d = dc.build(p0_plan())                                     # 1 group, cohorts A-C, SAC pots
     t = d.tasks()
     assert [x.date for x in t] == sorted(x.date for x in t)
-    one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments")
+    one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments",
+                "KCl soil collection setup", "Run swaps")
     for start in one_each:
         assert len(_named(t, start)) == 1, start
-    per_cohort = ("KCl soil collection setup", "Flood - ", "Wash pots")
+    per_cohort = ("Flood - ", "Wash pots")
     for start in per_cohort:
         assert len(_named(t, start)) == 3, start
     assert len(_named(t, "N2O measurements")) == 3 * 2          # 24 h and 48 h per cohort
@@ -369,9 +370,8 @@ def test_lab_tasks_are_on_working_days_after_the_harvest():
     for c in d.plan.cohorts:
         final = d.events(1, c)[-1][0]
         mine = [x for x in t if x.name.endswith(f"cohort {c.name}")]
-        setup = [x.date for x in mine if x.name.startswith("KCl soil collection setup")]
         harvest = [x.date for x in mine if x.name.startswith("Plant harvest")]
-        assert setup[0] < min(harvest) and max(harvest) == final
+        assert max(harvest) == final
         wash = [x.date for x in mine if x.name.startswith("Wash pots")]
         assert wash[0] > final
 
@@ -404,6 +404,30 @@ def test_kcl_batches_fill_in_harvest_order():
     assert b[0][0] == ("A sacrificial", 9) and b[-1][-1] == ("C final", 30)
     split = [name for name, _ in b[0]][-1]                      # one harvest spans the two
     assert split == [name for name, _ in b[1]][0] == "B final"
+
+
+def test_kcl_tubes_are_prepared_once_with_the_setup():
+    for plan in (p0_plan(), big_plan(), late_plan()):
+        d = dc.build(plan)
+        t = d.tasks()
+        setup = _named(t, "KCl soil collection setup")
+        prefill = _named(t, "Pre-fill pots")
+        assert len(setup) == 1 and setup[0].section == "Setup"
+        assert setup[0].date == min(x.date for x in prefill)        # with the first setup
+        assert setup[0].date < min(day for day, _, _ in d.harvests())
+        assert setup[0].notes.startswith(
+            f"{sum(p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)} tubes")
+
+
+def test_a_swaps_task_a_week_after_each_planting_day():
+    for plan in (p0_plan(spares_per_genotype_per_group=2), big_plan(), late_plan()):
+        d = dc.build(plan)
+        t = d.tasks()
+        plant = _named(t, "Label, plant seed")
+        swaps = _named(t, "Run swaps")
+        assert len(swaps) == len(plant)                             # one per planting day
+        assert sorted(x.date for x in swaps) == sorted(dc.workday(x.date, 5) for x in plant)
+        assert all(x.date.weekday() < 5 for x in swaps)
 
 
 def test_several_groups_name_the_group():

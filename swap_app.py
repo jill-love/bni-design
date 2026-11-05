@@ -67,6 +67,7 @@ class SwapWindow(QtWidgets.QMainWindow):
         self.spare.lineEdit().returnPressed.connect(self._add)
         fl.addRow("Spare that replaces it", self.spare)
         self.day = QtWidgets.QDateEdit(QtCore.QDate.currentDate()); self.day.setCalendarPopup(True)
+        self.day.dateChanged.connect(lambda _d: self.discard and (self._replay(), self._refresh()))
         self.day.setDisplayFormat("ddd d MMM yyyy")
         fl.addRow("Date", self.day)
         self.note = QtWidgets.QLineEdit(); self.note.setPlaceholderText("optional, e.g. no germination")
@@ -86,7 +87,9 @@ class SwapWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout()
         self.undo_b = QtWidgets.QPushButton("Remove selected (not saved yet)")
         self.undo_b.clicked.connect(self._remove)
-        self.discard_cb = QtWidgets.QCheckBox("Discard every spare left unused (no longer grown)")
+        self.discard_cb = QtWidgets.QCheckBox(
+            "Discard unused spares planted at least a week before the date above")
+        self.discard_cb.setToolTip("Spares of a later planting day are kept for their own week.")
         self.discard_cb.toggled.connect(self._toggle_discard)
         row.addWidget(self.undo_b); row.addStretch(1); row.addWidget(self.discard_cb)
         ll.addLayout(row)
@@ -130,7 +133,7 @@ class SwapWindow(QtWidgets.QMainWindow):
         for sw in self.pending:
             S.swap(d, sw.failed, sw.spare, sw.date, sw.note)
         if self.discard:
-            S.discard_spares(d)
+            S.discard_spares(d, self.day.date().toPython())
         self.design = d
 
     def _paint(self, color, text):
@@ -161,15 +164,16 @@ class SwapWindow(QtWidgets.QMainWindow):
         if have:
             left = {}
             for p in self.design.pots:
-                if p.role == dc.SPARE or (self.discard and p.role == dc.DISCARDED
-                                          and not p.swap):
+                if p.role == dc.SPARE:
                     k = (p.genotype, p.group)
                     left[k] = left.get(k, 0) + 1
             many = self.design.groups > 1
+            gone = sum(p.role == dc.DISCARDED and not p.swap for p in self.design.pots)
             self.spares_lbl.setText("Spares left: " + (", ".join(
                 f"{g}{f' group {gr}' if many else ''}: {n}"
                 for (g, gr), n in sorted(left.items())) or "none")
-                + ("   (will be discarded on Save)" if self.discard else ""))
+                + (f"   ({gone} discarded, {'with this save' if self.discard else 'before'})"
+                   if gone else ""))
         else:
             self.spares_lbl.setText("")
 
