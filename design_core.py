@@ -107,6 +107,14 @@ class Plan:
     min_stagger_days: int = DEFAULT_STAGGER_DAYS
     planting_groups: int = 0       # 0 = choose automatically
     spares_per_genotype_per_group: int = 0   # a spare replaces a pot of its own age
+    # dosing station (the workbook's `admin` tab); None = not known yet, left blank there
+    wfps_target: float | None = None         # fraction, e.g. 0.40 (wet-up and maintenance)
+    wfps_flood: float | None = None          # fraction, e.g. 0.95 (flood target)
+    bulk_density: float | None = None        # g/cm3
+    particle_density: float = 2.65           # g/cm3
+    air_dry_moisture: float | None = None    # fraction of air-dry soil mass, e.g. 0.04
+    air_dry_soil_g: float | None = None      # air-dry soil per pot, g
+    container_weight_g: float | None = None  # empty pot, g
     measure_hours: tuple[int, ...] = MEASURE_HOURS
     cohorts: list[Cohort] = field(default_factory=list)
     rows: list[PlanRow] = field(default_factory=list)
@@ -147,9 +155,38 @@ class PlanError(ValueError):
     """The plan cannot be built; the message says what to fix."""
 
 
+# The dosing station's admin-tab inputs: (attribute, admin key, plausible range). The
+# ranges are the station's own (wfps.py), so a slipped decimal is caught here, not at the
+# bench. Blank is allowed: the tab is written with the cell empty, to fill in later.
+ADMIN_INPUTS = (("wfps_target", "wfps_target", (0.2, 1.0)),
+                ("wfps_flood", "wfps_flood", (0.2, 1.0)),
+                ("bulk_density", "bulk_density", (0.5, 2.0)),
+                ("particle_density", "particle_density", (2.0, 3.5)),
+                ("air_dry_moisture", "air_dry_moisture", (0.0, 0.25)),
+                ("air_dry_soil_g", "air_dry_soil_g", (1.0, 5000.0)),
+                ("container_weight_g", "container_weight_g", (1.0, 5000.0)))
+ADMIN_REQUIRED = ("wfps_target", "bulk_density", "air_dry_moisture", "air_dry_soil_g",
+                  "container_weight_g")
+
+
+def admin_missing(plan: Plan) -> list[str]:
+    """Admin inputs the dosing station needs that the plan does not have yet."""
+    return [a for a in ADMIN_REQUIRED if getattr(plan, a) is None]
+
+
 def validate(plan: Plan) -> list[str]:
     """Problems that stop a build (empty list = OK)."""
     p = []
+    for attr, key, (lo, hi) in ADMIN_INPUTS:
+        v = getattr(plan, attr)
+        if v is not None and not lo <= v <= hi:
+            p.append(f"{key} {v:g} is outside {lo:g} to {hi:g}"
+                     + (" (a fraction: 0.40 for 40 %)" if "wfps" in key or "moisture" in key
+                        else ""))
+    if (plan.wfps_flood is not None and plan.wfps_target is not None
+            and plan.wfps_flood <= plan.wfps_target):
+        p.append(f"flood WFPS {plan.wfps_flood:g} must be above the target WFPS "
+                 f"{plan.wfps_target:g}")
     if not plan.name.strip():
         p.append("experiment name is empty")
     if not 1 <= plan.tables:

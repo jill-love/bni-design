@@ -515,7 +515,7 @@ def test_workbook_sheets_and_jars(tmp_path):
            for k in ("flood", "measure", "harvest")]
     assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups",
                                                                        "asana_tasks", "jars",
-                                                                       "info"]
+                                                                       "admin", "info"]
     jars = wb["jars"]
     assert [c.value for c in jars[1]] == ["barcode", "tag"]
     rows = list(jars.iter_rows(min_row=2, values_only=True))
@@ -646,6 +646,101 @@ def _check_timeline(formulas, openpyxl, d, path):
     assert all(int(val(f"TIMELINE'!{L(flood_col)}{r}")) == 0
                or int(val(f"TIMELINE'!{L(tot_col)}{r}")) == 0
                for r in range(start, last + 1))           # never both on one day
+
+
+# ---------------------------------------------------------------- admin tab
+SOIL = dict(wfps_target=0.40, wfps_flood=0.95, bulk_density=1.2, air_dry_moisture=0.04,
+            air_dry_soil_g=300.0, container_weight_g=35.0)
+
+
+def _admin(path):
+    import openpyxl
+    ws = openpyxl.load_workbook(path)["admin"]
+    return {r[0].value: (r[1], r[2].value) for r in ws.iter_rows()}
+
+
+def test_admin_tab_holds_the_dosing_inputs(tmp_path):
+    d = dc.build(p0_plan(**SOIL))
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    a = _admin(path)
+    want = dict(SOIL, particle_density=2.65, trial_id="B73-P0", profile="wet_up",
+                date=MON.isoformat())
+    for k, v in want.items():
+        assert a[k][0].value == v, k
+    assert all(not str(c.value or "").startswith("=") for c, _ in a.values())  # no formulas
+    assert "40 %" in a["wfps_target"][1] and "REQUIRED" not in "".join(n for _, n in a.values())
+
+
+def test_admin_tab_flags_what_is_missing(tmp_path):
+    d = dc.build(p0_plan(wfps_target=0.40))
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    a = _admin(path)
+    assert dc.admin_missing(d.plan) == ["bulk_density", "air_dry_moisture", "air_dry_soil_g",
+                                        "container_weight_g"]
+    for k in dc.admin_missing(d.plan):
+        assert a[k][0].value is None and a[k][1].startswith("REQUIRED"), k
+    assert a["wfps_flood"][0].value is None and not a["wfps_flood"][1].startswith("REQUIRED")
+
+
+@pytest.mark.parametrize("kw, words", [
+    (dict(wfps_target=40), "0.40 for 40 %"),
+    (dict(wfps_target=0.4, wfps_flood=0.35), "above the target"),
+    (dict(air_dry_moisture=4), "outside"),
+    (dict(bulk_density=12), "outside")])
+def test_admin_inputs_are_checked(kw, words):
+    with pytest.raises(dc.PlanError, match=words):
+        dc.build(p0_plan(**kw))
+
+
+def test_admin_inputs_survive_a_plan_file():
+    plan = p0_plan(**SOIL)
+    assert dc.Plan.from_dict(json.loads(json.dumps(plan.to_dict()))) == plan
+    old = p0_plan().to_dict()                                   # a plan file from before
+    for k in SOIL:
+        old.pop(k)
+    assert dc.Plan.from_dict(old).wfps_target is None
+
+
+def test_dosing_station_provisions_from_the_design_map(tmp_path):
+    """The real station code (../bni-dosing) reads this workbook as a trial: jars, admin,
+    and the WFPS targets. Skipped where the dosing repo is not beside this one."""
+    dosing = os.path.join(R, "..", "bni-dosing")
+    if not os.path.exists(os.path.join(dosing, "provision_jars.py")):
+        pytest.skip("bni-dosing not beside bni-design")
+    sys.path.insert(0, dosing)
+    try:
+        import provision_jars as P
+    finally:
+        sys.path.remove(dosing)
+    d = dc.build(p0_plan(**SOIL))
+    path = tmp_path / "trial.xlsx"
+    dx.write(d, str(path))
+    jars, meta, admin = P.read_jars(str(path))
+    assert [j.barcode for j in jars] == [p.barcode for p in d.pots]
+    res, _, tare = P.compute_from_admin(admin)
+    flood = P.flood_from_admin(admin)
+    assert tare == SOIL["container_weight_g"] + SOIL["air_dry_soil_g"]
+    assert res.target_mass_g > tare and flood.target_mass_g > res.target_mass_g
+    assert P.admin_profile(admin) == "wet_up"
+
+
+def test_window_reads_percent_as_fractions():
+    from PySide6 import QtWidgets
+    import design_app
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = design_app.DesignWindow(p0_plan(**SOIL))
+    assert w.admin_fields["wfps_target"][0].text() == "40"
+    assert w.read_plan().wfps_target == pytest.approx(0.40)
+    w.admin_fields["air_dry_moisture"][0].setText("5")
+    w.admin_fields["bulk_density"][0].setText("")
+    p = w.read_plan()
+    assert p.air_dry_moisture == pytest.approx(0.05) and p.bulk_density is None
+    w.admin_fields["bulk_density"][0].setText("abc")
+    with pytest.raises(dc.PlanError, match="Bulk density"):
+        w.read_plan()
+    w.close()
 
 
 # ---------------------------------------------------------------- window
