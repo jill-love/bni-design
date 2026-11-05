@@ -4,8 +4,9 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
 
 ## What it does
 
-1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity. **Spares are per genotype per planting group**: a spare can only replace a pot planted the same day. They are added once the groups are known, and never change the number of groups. Spare tags carry their group, for example `B73-G2-SPARE-01`.
+1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity. **Spares are per genotype per planting group**: a spare can only replace a pot planted the same day. They are added once the groups are known, and never change the number of groups. Spare tags carry their group, for example `B73-G2-SPARE-01`. The **Dosing station** box takes the WFPS target and flood WFPS (in %), the soil's bulk and particle density and air-dry moisture, the air-dry soil per pot and the empty pot weight; any of them may be left blank and filled in the workbook later.
 2. **Planting groups**: N2O is measured one pot at a time, at most *max N2O measurements / day* (50 by default). Planting is staggered so that no day needs more than that, and **a flood never falls on an N2O day**. The pots are split into the **fewest equally sized groups** that fit, planted at least 3 days apart by default (one group's 24 h and 48 h N2O days, then the next group's flood), or further apart if needed. The split is random but balanced: every genotype x cohort x treatment cell is spread over the groups as evenly as it divides.
+   **N2O times are set per cohort**, in the cohort table: whole days after the flood, e.g. `24, 48, 72` for one cohort and `24, 48` for another (blank: 24, 48). The first N2O day stays the cohort's first sample; the flood is that many hours before it, and harvest follows the last sample. They are fixed when the workbook is made (shown in each calendar column's header); change them in the window and generate again.
    **Cohorts that would collide are planted later, not respaced.** If one cohort's flood would fall on another's N2O day, the program keeps every cohort's days after planting exactly as entered and plants the later cohort a few days later instead (never earlier than the planting date). The cohort with the earliest first N2O day is planted on the planting date; each next one gets the smallest delay that clears the collision, 0 if none is needed. The delay is the yellow *Planted (days after group)* column on the timeline, and the planting tasks are listed per planting day.
 3. **Bench layout**: pots are spread over the **tables you say are available**, then the zones of each table. Each cell and each planting group is spread as evenly as it divides, and slots are random. A table holds up to 8 zones x 25 slots. Positions are written `T1-Z2-05`.
 4. **Timeline**: per planting group and cohort, all counted in days after planting (DAP):
@@ -15,9 +16,9 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
    | Plant | DAP 0 |
    | Water | **Monday, Wednesday and Friday**, from planting until the flood |
    | Treatment | on its DAP |
-   | Sacrificial harvest and flood | the day before the first N2O sample |
-   | N2O | 24 h and 48 h after the flood |
-   | Harvest | after the 48 h sample |
+   | Sacrificial harvest and flood | the cohort's first N2O time before its first N2O day (the day before, for 24 h) |
+   | N2O | at each of the cohort's own times after the flood, e.g. 24, 48, 72 h |
+   | Harvest | after the cohort's last N2O sample |
 
 Treatment, flood, N2O and harvest may fall on any day, weekends included.
 
@@ -34,7 +35,7 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Apply treatments | treatment day |
    | KCl soil collection setup (gathering supplies, printing & labeling tubes) | the working day before a cohort's first harvest |
    | Flood | flood day |
-   | N2O measurements | each N2O day (24 h, 48 h) |
+   | N2O measurements | each of the cohort's N2O days |
    | Plant harvest and soil sample collection | flood day (sacrificial pots) and after the last N2O (final) |
    | KCl extractions | the working day after each harvest |
    | KCl analysis (plate reader) | the working day after each extraction |
@@ -53,12 +54,13 @@ The same random seed always gives the same design.
 | `design` | One row per pot: barcode, role, genotype, cohort, treatment, rep, planting group, planting date (linked to the timeline), table, zone, slot, position, tag. |
 | `layout` | Each table as a zone x slot grid, in bright colours by planting group (by cohort when there is one group), with a legend. Sacrificial tags are italic. |
 | `flood_*` | Per cohort (and planting group): the sacrificial harvest, then the flood in N2O order, with columns to fill in. |
-| `measure_*` | One block per N2O time (24 h, 48 h): load, column, seq, pot, and columns for seat mass, times and notes. |
+| `measure_*` | One block per N2O time of that cohort: load, column, seq, pot, and columns for seat mass, times and notes. |
 | `harvest_*` | The measured pots after the last N2O time, with shoot and root weight columns. |
 | `tags` | Barcode, tag text and position for label printing, by planting group. |
 | `groups` | Planting groups and the N2O load per day as designed. |
 | `asana_tasks` | One row per task: Name, Due Date, Section/Column, Description, and nothing else. **File > Save As > CSV**, then in Asana: project > Import > CSV. Due dates follow the timeline's inputs. Watering has a few spare rows at the bottom, used when an edit adds watering days; a watering row whose day an edit removes goes blank. Delete blank rows (filter on Name) before saving the CSV. |
-| `jars` | `barcode` + `tag` (the tag ends with the position). This is the sheet the dosing station's provisioning reads; add its `admin` sheet before provisioning. |
+| `jars` | `barcode` + `tag` (the tag ends with the position). The pots for the dosing station. |
+| `admin` | The dosing station's WFPS inputs, as fractions (`wfps_target` 0.40 for 40 %), plus `trial_id`, the planting date and `profile` = `wet_up`. Values only, no formulas. With `jars`, the workbook is a complete trial: **Start New Trial...** on the station takes it as is. Any input left blank in the window is an empty yellow cell marked REQUIRED; fill it in before provisioning. |
 | `info` | The plan as entered, the seed and the version. |
 
 ## Run it

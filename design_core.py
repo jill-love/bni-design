@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-design_core.py: BNI experiment design (v0.4, 2026-11-04). No Qt, no Excel.
+design_core.py: BNI experiment design (v0.5, 2026-11-05). No Qt, no Excel.
 
 From a plan (genotypes x cohorts x treatments x reps, the bench, the N2O capacity) it
 builds one row per pot, then:
@@ -25,7 +25,8 @@ builds one row per pot, then:
      so every cohort keeps its days after planting and nothing is planted before the
      planting date.
   3. SCHEDULE. Per group and cohort: plant (DAP 0), treatment (treatment_dap), flood and
-     sacrificial harvest (first N2O DAP - 1), N2O at each measure offset (24 h, 48 h),
+     sacrificial harvest (the first N2O time before the first N2O DAP), N2O at each of the
+     cohort's own times (e.g. 24, 48, 72 h after the flood),
      harvest after the last one. Daily N2O load is counted per calendar day. Watering is
      Monday, Wednesday and Friday, after planting until the flood. Treatment, flood, N2O
      and harvest may fall on any day, weekends included.
@@ -50,7 +51,7 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 
-__version__ = "0.4"
+__version__ = "0.5"
 
 MAX_ZONES = 8              # a table holds at most 8 zones x 25 slots
 MAX_SLOTS = 25
@@ -82,7 +83,23 @@ GERMINATION_WORKDAYS = 5    # ZeaL germination check: the weekdays of the week a
 @dataclass
 class Cohort:
     name: str
-    first_n2o_dap: int             # day after planting of the first (24 h) N2O sample
+    first_n2o_dap: int             # day after planting of the cohort's first N2O sample
+    measure_hours: tuple[int, ...] = MEASURE_HOURS   # N2O after the flood, whole days
+
+    @property
+    def flood_dap(self) -> int:
+        """The flood: the first sample's hours before the first N2O day (24 h: the day
+        before)."""
+        return self.first_n2o_dap - self.measure_hours[0] // 24
+
+    @property
+    def offsets(self) -> tuple[int, ...]:
+        """Each sample's day after the first N2O day: 24, 48, 72 h -> 0, 1, 2."""
+        return tuple(h // 24 - self.measure_hours[0] // 24 for h in self.measure_hours)
+
+    @property
+    def last_offset(self) -> int:
+        return self.offsets[-1]
 
 
 @dataclass
@@ -107,7 +124,14 @@ class Plan:
     min_stagger_days: int = DEFAULT_STAGGER_DAYS
     planting_groups: int = 0       # 0 = choose automatically
     spares_per_genotype_per_group: int = 0   # a spare replaces a pot of its own age
-    measure_hours: tuple[int, ...] = MEASURE_HOURS
+    # dosing station (the workbook's `admin` tab); None = not known yet, left blank there
+    wfps_target: float | None = None         # fraction, e.g. 0.40 (wet-up and maintenance)
+    wfps_flood: float | None = None          # fraction, e.g. 0.95 (flood target)
+    bulk_density: float | None = None        # g/cm3
+    particle_density: float = 2.65           # g/cm3
+    air_dry_moisture: float | None = None    # fraction of air-dry soil mass, e.g. 0.04
+    air_dry_soil_g: float | None = None      # air-dry soil per pot, g
+    container_weight_g: float | None = None  # empty pot, g
     cohorts: list[Cohort] = field(default_factory=list)
     rows: list[PlanRow] = field(default_factory=list)
 
@@ -115,15 +139,18 @@ class Plan:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["planting_date"] = self.planting_date.isoformat()
-        d["measure_hours"] = list(self.measure_hours)
+        for c in d["cohorts"]:
+            c["measure_hours"] = list(c["measure_hours"])
         return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Plan":
         d = dict(d)
         d["planting_date"] = dt.date.fromisoformat(d["planting_date"])
-        d["measure_hours"] = tuple(d.get("measure_hours", MEASURE_HOURS))
-        d["cohorts"] = [Cohort(**c) for c in d.get("cohorts", [])]
+        # plan files before v0.5 had one list of N2O times for every cohort
+        hours = tuple(d.pop("measure_hours", MEASURE_HOURS))
+        d["cohorts"] = [Cohort(**{**c, "measure_hours": tuple(c.get("measure_hours", hours))})
+                        for c in d.get("cohorts", [])]
         d["rows"] = [PlanRow(**r) for r in d.get("rows", [])]
         if "spares_per_genotype" in d:                 # v0.1/v0.2 plan files
             d.setdefault("spares_per_genotype_per_group", d.pop("spares_per_genotype"))
@@ -135,9 +162,9 @@ class Plan:
         return self.tables * self.zones_per_table * self.slots_per_zone
 
     @property
-    def measure_offsets(self) -> tuple[int, ...]:
-        """Days after the first N2O DAP: 24 h -> 0, 48 h -> 1."""
-        return tuple(h // 24 - 1 for h in self.measure_hours)
+    def max_samples(self) -> int:
+        """The most N2O samples any cohort takes."""
+        return max((len(c.measure_hours) for c in self.cohorts), default=len(MEASURE_HOURS))
 
     def cohort(self, name: str) -> Cohort | None:
         return next((c for c in self.cohorts if c.name == name), None)
@@ -147,9 +174,38 @@ class PlanError(ValueError):
     """The plan cannot be built; the message says what to fix."""
 
 
+# The dosing station's admin-tab inputs: (attribute, admin key, plausible range). The
+# ranges are the station's own (wfps.py), so a slipped decimal is caught here, not at the
+# bench. Blank is allowed: the tab is written with the cell empty, to fill in later.
+ADMIN_INPUTS = (("wfps_target", "wfps_target", (0.2, 1.0)),
+                ("wfps_flood", "wfps_flood", (0.2, 1.0)),
+                ("bulk_density", "bulk_density", (0.5, 2.0)),
+                ("particle_density", "particle_density", (2.0, 3.5)),
+                ("air_dry_moisture", "air_dry_moisture", (0.0, 0.25)),
+                ("air_dry_soil_g", "air_dry_soil_g", (1.0, 5000.0)),
+                ("container_weight_g", "container_weight_g", (1.0, 5000.0)))
+ADMIN_REQUIRED = ("wfps_target", "bulk_density", "air_dry_moisture", "air_dry_soil_g",
+                  "container_weight_g")
+
+
+def admin_missing(plan: Plan) -> list[str]:
+    """Admin inputs the dosing station needs that the plan does not have yet."""
+    return [a for a in ADMIN_REQUIRED if getattr(plan, a) is None]
+
+
 def validate(plan: Plan) -> list[str]:
     """Problems that stop a build (empty list = OK)."""
     p = []
+    for attr, key, (lo, hi) in ADMIN_INPUTS:
+        v = getattr(plan, attr)
+        if v is not None and not lo <= v <= hi:
+            p.append(f"{key} {v:g} is outside {lo:g} to {hi:g}"
+                     + (" (a fraction: 0.40 for 40 %)" if "wfps" in key or "moisture" in key
+                        else ""))
+    if (plan.wfps_flood is not None and plan.wfps_target is not None
+            and plan.wfps_flood <= plan.wfps_target):
+        p.append(f"flood WFPS {plan.wfps_flood:g} must be above the target WFPS "
+                 f"{plan.wfps_target:g}")
     if not plan.name.strip():
         p.append("experiment name is empty")
     if not 1 <= plan.tables:
@@ -160,11 +216,8 @@ def validate(plan: Plan) -> list[str]:
         p.append(f"slots per zone must be 1 to {MAX_SLOTS}")
     if plan.max_measured_per_day < 1:
         p.append("max N2O measurements per day must be at least 1")
-    if plan.min_stagger_days < len(plan.measure_hours):
-        p.append(f"days between planting groups must be at least {len(plan.measure_hours)} "
-                 f"so one group's N2O days never overlap the next group's")
-    if any(h % 24 or h < 24 for h in plan.measure_hours):
-        p.append("N2O sampling times must be whole days after the flood (24 h, 48 h, ...)")
+    if plan.min_stagger_days < 2:
+        p.append("days between planting groups must be at least 2")
     names = [c.name for c in plan.cohorts]
     if not names:
         p.append("add at least one cohort")
@@ -173,12 +226,24 @@ def validate(plan: Plan) -> list[str]:
     for c in plan.cohorts:
         if not c.name.strip():
             p.append("a cohort has no name")
-        if c.first_n2o_dap < 2:
-            p.append(f"cohort {c.name}: first N2O must be at least 2 days after planting "
-                     f"(the flood is the day before)")
-        if plan.treatment_dap is not None and plan.treatment_dap >= c.first_n2o_dap - 1:
+        h = c.measure_hours
+        if not h:
+            p.append(f"cohort {c.name}: give at least one N2O time (e.g. 24, 48)")
+            continue
+        if any(x % 24 or x < 24 for x in h):
+            p.append(f"cohort {c.name}: N2O times must be whole days after the flood "
+                     f"(24, 48, 72 h ...), not {', '.join(map(str, h))}")
+            continue
+        if list(h) != sorted(set(h)):
+            p.append(f"cohort {c.name}: N2O times must be in order, each once "
+                     f"({', '.join(map(str, h))})")
+            continue
+        if c.flood_dap < 1:
+            p.append(f"cohort {c.name}: the flood (first N2O day {c.first_n2o_dap} minus "
+                     f"{h[0]} h) would fall before planting")
+        if plan.treatment_dap is not None and plan.treatment_dap >= c.flood_dap:
             p.append(f"cohort {c.name}: treatment (DAP {plan.treatment_dap}) must come before "
-                     f"the flood (DAP {c.first_n2o_dap - 1})")
+                     f"the flood (DAP {c.flood_dap})")
     if not any(r.reps or r.sacrificial for r in plan.rows):
         p.append("the plan has no pots: enter reps")
     seen = set()
@@ -333,8 +398,8 @@ def cohort_offsets(plan: Plan) -> dict[str, int]:
         c = plan.cohorts[i]
         off = 0
         while True:
-            f = off + c.first_n2o_dap - 1
-            m = {off + c.first_n2o_dap + o for o in plan.measure_offsets}
+            f = off + c.flood_dap
+            m = {off + c.first_n2o_dap + o for o in c.offsets}
             if f not in n2o and not (m & flood):
                 break
             off += 1
@@ -351,7 +416,7 @@ def daily_load(plan: Plan, pots: list[Pot], stagger_days: int,
         if p.role != MEASURED:
             continue
         c = plan.cohort(p.cohort)
-        for off in plan.measure_offsets:
+        for off in c.offsets:
             load[(p.group - 1) * stagger_days + offsets[c.name] + c.first_n2o_dap + off] += 1
     return load
 
@@ -363,9 +428,9 @@ def clash_days(plan: Plan, groups: int, stagger_days: int,
     flood, n2o = set(), set()
     for g in range(groups):
         for c in plan.cohorts:
-            base = g * stagger_days + offsets[c.name] + c.first_n2o_dap
-            flood.add(base - 1)
-            n2o.update(base + off for off in plan.measure_offsets)
+            base = g * stagger_days + offsets[c.name]
+            flood.add(base + c.flood_dap)
+            n2o.update(base + c.first_n2o_dap + off for off in c.offsets)
     return sorted(flood & n2o)
 
 
@@ -567,10 +632,10 @@ class Design:
         ev = [(p0, "Plant")]
         if self.plan.treatment_dap is not None:
             ev.append((day(self.plan.treatment_dap), "Treatment"))
-        ev.append((day(cohort.first_n2o_dap - 1),
+        ev.append((day(cohort.flood_dap),
                    "Sacrificial harvest, flood" if has_sac else "Flood"))
-        offs = self.plan.measure_offsets
-        for h, off in zip(self.plan.measure_hours, offs):
+        offs = cohort.offsets
+        for h, off in zip(cohort.measure_hours, offs):
             last = off == offs[-1]
             ev.append((day(cohort.first_n2o_dap + off),
                        f"{h} h N2O" + (", harvest" if last else "")))
@@ -578,7 +643,7 @@ class Design:
 
     def water(self, g: int, cohort: Cohort) -> list[dt.date]:
         p0 = self.planting(g, cohort.name)
-        return water_days(p0, p0 + dt.timedelta(days=cohort.first_n2o_dap - 1))
+        return water_days(p0, p0 + dt.timedelta(days=cohort.flood_dap))
 
     def day_text(self, g: int, cohort: Cohort, day: dt.date) -> str:
         """What the timeline cell for group g, cohort `cohort` says on `day`."""
@@ -600,7 +665,7 @@ class Design:
         if kind == "treat":
             return p0 + dt.timedelta(days=self.plan.treatment_dap)
         if kind == "flood":
-            return p0 + dt.timedelta(days=c.first_n2o_dap - 1)
+            return p0 + dt.timedelta(days=c.flood_dap)
         return p0 + dt.timedelta(days=c.first_n2o_dap + a[2])          # "n2o"
 
     def water_days_all(self) -> list[dt.date]:
@@ -656,7 +721,7 @@ class Design:
                           for p in self.pots)
                 meas = sum(p.role == MEASURED and p.group == g and p.cohort == c.name
                            for p in self.pots)
-                last = ("n2o", g, c.name, plan.measure_offsets[-1])
+                last = ("n2o", g, c.name, c.last_offset)
                 harvests = [(("flood", g, c.name), f"sacrificial harvest, {sac} pots")] if sac else []
                 harvests.append((last, f"final harvest, {meas} pots"))
                 add(harvests[0][0], lag["kcl_setup"],
@@ -666,7 +731,7 @@ class Design:
                 add(("flood", g, c.name), None, f"Flood - {w}", "N2O",
                     (f"harvest the {sac} sacrificial pots first; " if sac else "")
                     + f"flood {meas} pots in the flood sheet's order")
-                for h, off in zip(plan.measure_hours, plan.measure_offsets):
+                for h, off in zip(c.measure_hours, c.offsets):
                     add(("n2o", g, c.name, off), None, f"N2O measurements, {h} h - {w}", "N2O",
                         f"{meas} pots")
                 for anchor, what in harvests:

@@ -26,7 +26,10 @@ Sheets
             Description): save as CSV and import into an Asana project. Every repeat is its
             own row. Due dates are formulas on the timeline, so they follow its edits.
   jars      barcode + tag (tag ends with the Tn-Zn-nn position): the sheet the dosing
-            station's provisioning reads (add its `admin` sheet before provisioning).
+            station's provisioning reads.
+  admin     the dosing station's WFPS inputs (key in column A, value in B, note in C):
+            with jars, the workbook is ready for the station's Start New Trial. Plain
+            values only (the station refuses formulas); blank yellow cells still to fill.
   info      the plan as entered, seed and version, so the design can be rebuilt exactly.
 """
 from __future__ import annotations
@@ -108,6 +111,7 @@ class Refs:
         self.plant = {}            # group -> planting date cell
         self.n2o = {}              # cohort -> first N2O DAP cell
         self.delay = {}            # cohort -> planting delay cell (days after the group date)
+        self.lag = {}              # cohort -> days from the flood to its first N2O (24 h: 1)
         self.treat = ""            # treatment DAP cell
         self.water_days = ""       # calendar column: the date when anything is watered, else ""
         self.water_who = ""        # calendar column: who is watered that day
@@ -118,7 +122,7 @@ class Refs:
         return f"({self.plant[g]}+{self.delay[c]})" if c else self.plant[g]
 
     def flood_date(self, g, c):
-        return f"{self.planting(g, c)}+{self.n2o[c]}-1"
+        return f"{self.planting(g, c)}+{self.n2o[c]}-{self.lag[c]}"
 
     def n2o_date(self, g, c, off):
         return f"{self.planting(g, c)}+{self.n2o[c]}+{off}"
@@ -173,7 +177,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
         refs.n2o[c.name] = f"timeline!$B${r}"
         ws.cell(row=r, column=1, value=c.name).font = BOLD
         _input(ws.cell(row=r, column=2, value=c.first_n2o_dap))
-        ws.cell(row=r, column=3, value=f"=B{r}-1").border = BOX
+        refs.lag[c.name] = c.measure_hours[0] // 24
+        ws.cell(row=r, column=3, value=f"=B{r}-{refs.lag[c.name]}").border = BOX
         refs.delay[c.name] = f"timeline!$D${r}"
         _input(ws.cell(row=r, column=4, value=d.offsets.get(c.name, 0)))
 
@@ -200,9 +205,12 @@ def _timeline(wb, d: dc.Design) -> Refs:
     last_col = first_col + len(cols) - 1
     flood_col, n2o_col = last_col + 1, last_col + 2
     who_col, wday_col = last_col + 3, last_col + 4          # helpers for the asana_tasks dates
-    late = lambda c: f" (planted +{d.offsets[c.name]} d)" if d.offsets.get(c.name) else ""
-    _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}{late(c)}" for g, c in cols]
+    late = lambda c: f", planted +{d.offsets[c.name]} d" if d.offsets.get(c.name) else ""
+    _header(ws, hdr, ["Date", "Day"] + [f"Group {g} · Cohort {c.name}\n"
+                                        f"({', '.join(map(str, c.measure_hours))} h{late(c)})"
+                                        for g, c in cols]
             + ["Flood pots", "N2O pots", "Watered", "Water day"])
+    ws.row_dimensions[hdr].height = 32
     n_row = hdr + 1                                     # measured pots per column (helper)
     ws.cell(row=n_row, column=1, value="measured pots").font = NOTE
     for j, (g, c) in enumerate(cols):
@@ -227,17 +235,18 @@ def _timeline(wb, d: dc.Design) -> Refs:
         for j, (g, c) in enumerate(cols):
             pr = f"($F${grp_row[g]}+$D${coh_row[c.name]})"
             n2o = f"$B${coh_row[c.name]}"
-            watered = (f'AND($A{r}>{pr},$A{r}<{pr}+{n2o}-1,'
+            lag = refs.lag[c.name]
+            watered = (f'AND($A{r}>{pr},$A{r}<{pr}+{n2o}-{lag},'
                        f'ISNUMBER(SEARCH(TEXT($A{r},"ddd"),{WATER})))')
             flood_txt = ("Sacrificial harvest, flood"
                          if any(p.role == dc.SACRIFICIAL and p.group == g and p.cohort == c.name
                                 for p in d.pots) else "Flood")
             f = f'IF({watered},"Water","")'               # innermost: watering, else blank
-            offs = plan.measure_offsets
-            for h, off in reversed(list(zip(plan.measure_hours, offs))):
+            offs = c.offsets
+            for h, off in reversed(list(zip(c.measure_hours, offs))):
                 txt = f"{h} h N2O" + (", harvest" if off == offs[-1] else "")
                 f = f'IF($A{r}={pr}+{n2o}+{off},"{txt}",{f})'
-            f = f'IF($A{r}={pr}+{n2o}-1,"{flood_txt}",{f})'
+            f = f'IF($A{r}={pr}+{n2o}-{lag},"{flood_txt}",{f})'
             f = (f'IF(IF({TREAT}="",FALSE,$A{r}={pr}+{TREAT}),'
                  f'IF({watered},"Treatment; water","Treatment"),{f})')
             f = f'=IF($A{r}={pr},"Plant",{f})'
@@ -304,6 +313,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
     ws.column_dimensions[L(n2o_col)].width = 10
     ws.column_dimensions[L(who_col)].width = 24
     ws.column_dimensions[L(wday_col)].width = 10
+    # column F also holds the planting dates: never narrower than a date
+    ws.column_dimensions["F"].width = max(ws.column_dimensions["F"].width or 0, 14)
     ws.freeze_panes = ws.cell(row=start, column=first_col)
     return refs
 
@@ -470,8 +481,8 @@ def _cohort_sheets(wb, d: dc.Design, refs: Refs) -> None:
                         f" mixes treatments and genotypes.")
             ws["A1"].font = Font(bold=True, size=12)
             r = 3
-            offs = plan.measure_offsets
-            for h, off in zip(plan.measure_hours, offs):
+            offs = c.offsets
+            for h, off in zip(c.measure_hours, offs):
                 _dated(ws, r, f"{h} h N2O" + (", then harvest" if off == offs[-1] else ""),
                        refs.n2o_date(g, c.name, off))
                 r += 1
@@ -502,7 +513,7 @@ def _cohort_sheets(wb, d: dc.Design, refs: Refs) -> None:
 
             # ---- harvest ----
             ws = wb.create_sheet(f"harvest_{tag}")
-            ws["A1"] = f"{who}: harvest after the {plan.measure_hours[-1]} h N2O"
+            ws["A1"] = f"{who}: harvest after the {c.measure_hours[-1]} h N2O"
             ws["A1"].font = Font(bold=True, size=12)
             _dated(ws, 2, "Date", refs.n2o_date(g, c.name, offs[-1]))
             _header(ws, 4, ["seq", "barcode", "position", "genotype", "treatment", "rep",
@@ -610,6 +621,41 @@ def _jars(wb, d: dc.Design) -> None:
     ws.freeze_panes = "A2"
 
 
+def _admin(wb, d: dc.Design) -> None:
+    """The dosing station's `admin` tab, in the station template's order. Values, never
+    formulas: provisioning refuses a formula it cannot see the result of."""
+    plan = d.plan
+    ws = wb.create_sheet("admin")
+    pct = lambda v: f"= {v * 100:g} %" if v is not None else ""
+    rows = [
+        ("trial_id", plan.name, "experiment id (the barcodes' prefix)", False),
+        ("soil_label", None, "optional", False),
+        ("operator", None, "optional", False),
+        ("date", plan.planting_date.isoformat(), "planting date, group 1", False),
+        ("profile", "wet_up", "first watering: wet-up from air-dry soil", False),
+        ("bulk_density", plan.bulk_density, "g/cm3", True),
+        ("air_dry_moisture", plan.air_dry_moisture,
+         f"fraction of air-dry soil mass {pct(plan.air_dry_moisture)}", True),
+        ("particle_density", plan.particle_density, "g/cm3 (2.65 if unknown)", False),
+        ("wfps_target", plan.wfps_target,
+         f"fraction: wet-up and maintenance target {pct(plan.wfps_target)}", True),
+        ("wfps_flood", plan.wfps_flood,
+         f"fraction: flood target {pct(plan.wfps_flood)} (blank: no flood target)", True),
+        ("container_weight_g", plan.container_weight_g, "empty pot, g", True),
+        ("air_dry_soil_g", plan.air_dry_soil_g, "air-dry soil per pot, g", True),
+    ]
+    for r, (key, val, note, yellow) in enumerate(rows, 1):
+        ws.cell(row=r, column=1, value=key).font = BOLD
+        c = ws.cell(row=r, column=2, value=val)
+        if yellow:
+            _input(c)
+        missing = val is None and key in dc.ADMIN_REQUIRED
+        n = ws.cell(row=r, column=3, value=("REQUIRED: fill in before Start New Trial. "
+                                            if missing else "") + note)
+        n.font = Font(bold=True, color="B91C1C") if missing else NOTE
+    _widths(ws, (22, 16, 60))
+
+
 def _info(wb, d: dc.Design) -> None:
     plan = d.plan
     ws = wb.create_sheet("info")
@@ -624,7 +670,6 @@ def _info(wb, d: dc.Design) -> None:
             ("planting groups", d.groups), ("days between groups", d.stagger_days),
             ("max N2O per day (designed)", d.max_load),
             ("max N2O per day (capacity)", plan.max_measured_per_day),
-            ("N2O after flood (h)", ", ".join(str(h) for h in plan.measure_hours)),
             ("N2O columns per load", dc.N2O_COLUMNS),
             ("watering", dc.WATER_DAY_NAMES),
             ("planting date, group 1", plan.planting_date.isoformat()),
@@ -633,9 +678,10 @@ def _info(wb, d: dc.Design) -> None:
         ws.append([k, v])
         ws.cell(row=ws.max_row, column=1).font = BOLD
     ws.append([])
-    ws.append(["cohort", "first N2O DAP", "planted, days after group"])
+    ws.append(["cohort", "first N2O DAP", "planted, days after group", "N2O after flood (h)"])
     for cc in plan.cohorts:
-        ws.append([cc.name, cc.first_n2o_dap, d.offsets.get(cc.name, 0)])
+        ws.append([cc.name, cc.first_n2o_dap, d.offsets.get(cc.name, 0),
+                   ", ".join(str(h) for h in cc.measure_hours)])
     ws.append([])
     ws.append(["genotype", "cohort", "treatment", "reps", "sacrificial"])
     for pr in plan.rows:
@@ -657,5 +703,6 @@ def write(d: dc.Design, path: str) -> None:
     _groups(wb, d, refs)
     _asana(wb, d, refs)
     _jars(wb, d)
+    _admin(wb, d)
     _info(wb, d)
     wb.save(path)

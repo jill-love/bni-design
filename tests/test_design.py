@@ -515,7 +515,7 @@ def test_workbook_sheets_and_jars(tmp_path):
            for k in ("flood", "measure", "harvest")]
     assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups",
                                                                        "asana_tasks", "jars",
-                                                                       "info"]
+                                                                       "admin", "info"]
     jars = wb["jars"]
     assert [c.value for c in jars[1]] == ["barcode", "tag"]
     rows = list(jars.iter_rows(min_row=2, values_only=True))
@@ -646,6 +646,190 @@ def _check_timeline(formulas, openpyxl, d, path):
     assert all(int(val(f"TIMELINE'!{L(flood_col)}{r}")) == 0
                or int(val(f"TIMELINE'!{L(tot_col)}{r}")) == 0
                for r in range(start, last + 1))           # never both on one day
+
+
+# ---------------------------------------------------------------- N2O times per cohort
+def mixed_plan(**kw):
+    """A samples at 24, 48, 72 h; B at 24, 48 h; C only at 48 and 96 h."""
+    return p0_plan(cohorts=[dc.Cohort("A", 21, (24, 48, 72)), dc.Cohort("B", 24, (24, 48)),
+                            dc.Cohort("C", 30, (48, 96))],
+                   rows=[dc.PlanRow("B73", c, t, 4, 1) for c in "ABC" for t in ("CTRL", "SN")],
+                   **kw)
+
+
+def test_each_cohort_has_its_own_n2o_times():
+    d = dc.build(mixed_plan())
+    for c in d.plan.cohorts:
+        ev = d.events(1, c)
+        p0 = d.planting(1, c.name)
+        flood = [day for day, t in ev if "flood" in t.lower()]
+        n2o = [(day, t) for day, t in ev if "N2O" in t]
+        assert flood == [p0 + dt.timedelta(days=c.first_n2o_dap - c.measure_hours[0] // 24)]
+        assert [t.split(",")[0] for _, t in n2o] == [f"{h} h N2O" for h in c.measure_hours]
+        assert [day for day, _ in n2o] == [flood[0] + dt.timedelta(days=h // 24)
+                                           for h in c.measure_hours]
+        assert n2o[-1][1].endswith("harvest") and n2o[0][0] == p0 + dt.timedelta(
+            days=c.first_n2o_dap)                           # first N2O keeps its meaning
+    t = d.tasks()
+    for c in "ABC":
+        n = [x for x in t if x.name.startswith("N2O measurements") and x.name.endswith(c)]
+        assert len(n) == len(d.plan.cohort(c).measure_hours)
+
+
+def test_load_and_clash_count_every_cohorts_times():
+    d = dc.build(mixed_plan())
+    meas = Counter(p.cohort for p in d.pots if p.role == dc.MEASURED)
+    assert sum(d.load.values()) == sum(meas[c.name] * len(c.measure_hours)
+                                       for c in d.plan.cohorts)
+    assert not dc.clash_days(d.plan, d.groups, d.stagger_days, d.offsets)
+
+
+@pytest.mark.parametrize("hours, words", [((24, 36), "whole days"), ((48, 24), "in order"),
+                                          ((24, 24), "in order"), ((), "at least one")])
+def test_bad_n2o_times_are_refused(hours, words):
+    with pytest.raises(dc.PlanError, match=words):
+        dc.build(p0_plan(cohorts=[dc.Cohort("A", 21, hours)],
+                         rows=[dc.PlanRow("B73", "A", "CTRL", 3)]))
+
+
+def test_flood_must_follow_treatment_with_late_first_sample():
+    # first sample at 72 h: the flood is 3 days before the first N2O day (DAP 18)
+    with pytest.raises(dc.PlanError, match="before the flood"):
+        dc.build(p0_plan(treatment_dap=18, cohorts=[dc.Cohort("A", 21, (72,))],
+                         rows=[dc.PlanRow("B73", "A", "CTRL", 3)]))
+
+
+def test_old_plan_files_give_every_cohort_the_shared_times():
+    d = p0_plan().to_dict()
+    for c in d["cohorts"]:
+        c.pop("measure_hours")
+    d["measure_hours"] = [24, 48, 72]                          # the v0.4 plan-level list
+    plan = dc.Plan.from_dict(d)
+    assert all(c.measure_hours == (24, 48, 72) for c in plan.cohorts)
+    assert dc.Plan.from_dict(json.loads(json.dumps(mixed_plan().to_dict()))) == mixed_plan()
+
+
+def test_mixed_times_formulas_calculate(tmp_path):
+    formulas = pytest.importorskip("formulas")
+    import openpyxl
+    d = dc.build(mixed_plan())
+    _check_timeline(formulas, openpyxl, d, tmp_path / "x.xlsx")
+    assert _asana_values(tmp_path / "x.xlsx") == _expected(d)
+    wb = openpyxl.load_workbook(tmp_path / "x.xlsx")
+    assert [c.value for c in wb["measure_A"]["A"] if str(c.value or "").endswith(
+        ("N2O", "harvest"))] == ["24 h N2O", "48 h N2O", "72 h N2O, then harvest"]
+    assert wb["harvest_C"]["A1"].value.endswith("after the 96 h N2O")
+
+
+def test_window_reads_n2o_times():
+    from PySide6 import QtWidgets
+    import design_app
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = design_app.DesignWindow(mixed_plan())
+    assert w.cohorts.text(0, 2) == "24, 48, 72"
+    w.cohorts.set_text(1, 2, "24 48 72 96")
+    w.cohorts.set_text(2, 2, "")
+    p = w.read_plan()
+    assert [c.measure_hours for c in p.cohorts] == [(24, 48, 72), (24, 48, 72, 96), (24, 48)]
+    w.cohorts.set_text(2, 2, "24, two")
+    with pytest.raises(dc.PlanError, match="cohort C"):
+        w.read_plan()
+    w.close()
+
+
+# ---------------------------------------------------------------- admin tab
+SOIL = dict(wfps_target=0.40, wfps_flood=0.95, bulk_density=1.2, air_dry_moisture=0.04,
+            air_dry_soil_g=300.0, container_weight_g=35.0)
+
+
+def _admin(path):
+    import openpyxl
+    ws = openpyxl.load_workbook(path)["admin"]
+    return {r[0].value: (r[1], r[2].value) for r in ws.iter_rows()}
+
+
+def test_admin_tab_holds_the_dosing_inputs(tmp_path):
+    d = dc.build(p0_plan(**SOIL))
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    a = _admin(path)
+    want = dict(SOIL, particle_density=2.65, trial_id="B73-P0", profile="wet_up",
+                date=MON.isoformat())
+    for k, v in want.items():
+        assert a[k][0].value == v, k
+    assert all(not str(c.value or "").startswith("=") for c, _ in a.values())  # no formulas
+    assert "40 %" in a["wfps_target"][1] and "REQUIRED" not in "".join(n for _, n in a.values())
+
+
+def test_admin_tab_flags_what_is_missing(tmp_path):
+    d = dc.build(p0_plan(wfps_target=0.40))
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    a = _admin(path)
+    assert dc.admin_missing(d.plan) == ["bulk_density", "air_dry_moisture", "air_dry_soil_g",
+                                        "container_weight_g"]
+    for k in dc.admin_missing(d.plan):
+        assert a[k][0].value is None and a[k][1].startswith("REQUIRED"), k
+    assert a["wfps_flood"][0].value is None and not a["wfps_flood"][1].startswith("REQUIRED")
+
+
+@pytest.mark.parametrize("kw, words", [
+    (dict(wfps_target=40), "0.40 for 40 %"),
+    (dict(wfps_target=0.4, wfps_flood=0.35), "above the target"),
+    (dict(air_dry_moisture=4), "outside"),
+    (dict(bulk_density=12), "outside")])
+def test_admin_inputs_are_checked(kw, words):
+    with pytest.raises(dc.PlanError, match=words):
+        dc.build(p0_plan(**kw))
+
+
+def test_admin_inputs_survive_a_plan_file():
+    plan = p0_plan(**SOIL)
+    assert dc.Plan.from_dict(json.loads(json.dumps(plan.to_dict()))) == plan
+    old = p0_plan().to_dict()                                   # a plan file from before
+    for k in SOIL:
+        old.pop(k)
+    assert dc.Plan.from_dict(old).wfps_target is None
+
+
+def test_dosing_station_provisions_from_the_design_map(tmp_path):
+    """The real station code (../bni-dosing) reads this workbook as a trial: jars, admin,
+    and the WFPS targets. Skipped where the dosing repo is not beside this one."""
+    dosing = os.path.join(R, "..", "bni-dosing")
+    if not os.path.exists(os.path.join(dosing, "provision_jars.py")):
+        pytest.skip("bni-dosing not beside bni-design")
+    sys.path.insert(0, dosing)
+    try:
+        import provision_jars as P
+    finally:
+        sys.path.remove(dosing)
+    d = dc.build(p0_plan(**SOIL))
+    path = tmp_path / "trial.xlsx"
+    dx.write(d, str(path))
+    jars, meta, admin = P.read_jars(str(path))
+    assert [j.barcode for j in jars] == [p.barcode for p in d.pots]
+    res, _, tare = P.compute_from_admin(admin)
+    flood = P.flood_from_admin(admin)
+    assert tare == SOIL["container_weight_g"] + SOIL["air_dry_soil_g"]
+    assert res.target_mass_g > tare and flood.target_mass_g > res.target_mass_g
+    assert P.admin_profile(admin) == "wet_up"
+
+
+def test_window_reads_percent_as_fractions():
+    from PySide6 import QtWidgets
+    import design_app
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = design_app.DesignWindow(p0_plan(**SOIL))
+    assert w.admin_fields["wfps_target"][0].text() == "40"
+    assert w.read_plan().wfps_target == pytest.approx(0.40)
+    w.admin_fields["air_dry_moisture"][0].setText("5")
+    w.admin_fields["bulk_density"][0].setText("")
+    p = w.read_plan()
+    assert p.air_dry_moisture == pytest.approx(0.05) and p.bulk_density is None
+    w.admin_fields["bulk_density"][0].setText("abc")
+    with pytest.raises(dc.PlanError, match="Bulk density"):
+        w.read_plan()
+    w.close()
 
 
 # ---------------------------------------------------------------- window
