@@ -237,26 +237,27 @@ def test_window_adds_removes_and_saves(tmp_path):
     w.close()
 
 
-# ---------------------------------------------------------------- planting date
+# ---------------------------------------------------------------- planting group = date
 def _late_map(tmp_path):
-    """Cohort B collides with A and is planted 2 days after the group (and its spares)."""
+    """Cohort B collides with A: it is planted 2 days later, as planting group 2."""
     plan = p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 22)],
                    rows=[dc.PlanRow(g, c, "CTRL", 3, 1) for g in ("B73", "Mo17") for c in "AB"],
                    spares_per_genotype_per_group=2)
     return _map(tmp_path, plan)
 
 
-def test_a_spare_only_replaces_a_pot_planted_the_same_day(tmp_path):
+def test_a_spare_only_replaces_a_pot_of_its_planting_group(tmp_path):
     d, path = _late_map(tmp_path)
-    assert d.offsets == {"A": 0, "B": 2}
+    assert d.offsets == {"A": 0, "B": 2} and d.groups == 2
     on_day = _first(d, role=dc.MEASURED, cohort="A", genotype="B73")
     late = _first(d, role=dc.MEASURED, cohort="B", genotype="B73")
-    early_spare = _first(d, role=dc.SPARE, genotype="B73", planted_with="A")
-    late_spare = _first(d, role=dc.SPARE, genotype="B73", planted_with="B")
+    assert (on_day.group, late.group) == (1, 2)
+    early_spare = _first(d, role=dc.SPARE, genotype="B73", group=1)
+    late_spare = _first(d, role=dc.SPARE, genotype="B73", group=2)
     assert S.planted(d, early_spare) == S.planted(d, on_day) != S.planted(d, late)
     assert S.planted(d, late_spare) == S.planted(d, late)
-    assert {p.planted_with for p in S.eligible_spares(d, late)} == {"B"}
-    assert {p.planted_with for p in S.eligible_spares(d, on_day)} == {"A"}
+    assert {p.group for p in S.eligible_spares(d, late)} == {2}
+    assert {p.group for p in S.eligible_spares(d, on_day)} == {1}
     with pytest.raises(S.SwapError, match="planted .* own age"):
         S.swap(d, late.barcode, early_spare.barcode)
     assert late.role == dc.MEASURED and early_spare.role == dc.SPARE   # nothing changed
@@ -264,18 +265,15 @@ def test_a_spare_only_replaces_a_pot_planted_the_same_day(tmp_path):
     S.swap(d, on_day.barcode, early_spare.barcode)
 
 
-def test_every_planting_day_has_its_own_spares(tmp_path):
-    d, path = _late_map(tmp_path)                       # 2 per genotype per planting day
+def test_every_planting_group_has_its_own_spares(tmp_path):
+    d, path = _late_map(tmp_path)                       # 2 per genotype per group
     sp = [p for p in d.pots if p.role == dc.SPARE]
-    assert len(sp) == 2 * 2 * 2                         # genotypes x days x 2
-    assert sorted({p.label.split("-SPARE")[0] for p in sp}) == ["B73-A", "B73-B",
-                                                                "Mo17-A", "Mo17-B"]
+    assert len(sp) == 2 * 2 * 2                         # genotypes x groups x 2
+    assert sorted({p.label.split("-SPARE")[0] for p in sp}) == ["B73-G1", "B73-G2",
+                                                                "Mo17-G1", "Mo17-G2"]
     d2, _ = S.read_design_map(path)
-    assert {(p.barcode, p.planted_with) for p in d2.pots if p.role == dc.SPARE} == \
-           {(p.barcode, p.planted_with) for p in sp}
-    wb = openpyxl.load_workbook(path)
-    tags = {r[0]: r[1] for r in wb["jars"].iter_rows(min_row=2, values_only=True)}
-    assert all("-A-SPARE-" in tags[p.barcode] or "-B-SPARE-" in tags[p.barcode] for p in sp)
+    assert {(p.barcode, p.group) for p in d2.pots if p.role == dc.SPARE} == \
+           {(p.barcode, p.group) for p in sp}
 
 
 def test_a_spare_only_replaces_its_own_genotype(tmp_path):
@@ -283,22 +281,38 @@ def test_a_spare_only_replaces_its_own_genotype(tmp_path):
     f = _first(d, role=dc.MEASURED, cohort="A", genotype="B73")
     assert all(p.genotype == "B73" for p in S.eligible_spares(d, f))
     with pytest.raises(S.SwapError, match="own genotype"):
-        S.swap(d, f.barcode, _first(d, role=dc.SPARE, genotype="Mo17", planted_with="A").barcode)
+        S.swap(d, f.barcode, _first(d, role=dc.SPARE, genotype="Mo17", group=1).barcode)
 
 
-def test_planting_delay_edited_in_the_timeline_counts(tmp_path):
+def test_older_maps_with_two_planting_days_per_group_are_split(tmp_path):
+    """A map made when a group could plant on two days (B later, spares 'planted with')."""
     d, path = _late_map(tmp_path)
     wb = openpyxl.load_workbook(path)
-    tl = wb["timeline"]
-    row_b = next(r for r in range(1, 40) if tl.cell(r, 1).value == "B")
-    tl.cell(row_b, 4).value = 0                                     # B planted with A after all
+    del wb[dx.PLAN_SHEET]
+    info = wb["info"]
+    for row in info.iter_rows():                        # the old info layout
+        if row[0].value == "planting rounds":
+            row[0].value = "planting groups"
+        elif row[0].value == "days between rounds":
+            row[0].value = "days between groups"
+        elif row[0].value == "planting groups (one planting date each)":
+            row[0].value = "planting groups (old)"
+    ds = wb["design"]
+    head = [c.value for c in ds[1]]
+    gcol, ccol = head.index("planting_group") + 1, head.index("cohort") + 1
+    ds.cell(1, len(head) + 1, "planted_with")
+    for r in range(2, ds.max_row + 1):                  # back to one group, two days
+        if ds.cell(r, gcol).value == 2:
+            ds.cell(r, gcol).value = 1
+            if not ds.cell(r, ccol).value:
+                ds.cell(r, len(head) + 1, "B")
     wb.save(path)
     d2, _ = S.read_design_map(path)
-    late = _first(d2, role=dc.MEASURED, cohort="B", genotype="B73")
-    assert d2.offsets["B"] == 0 and S.eligible_spares(d2, late)
+    assert d2.groups == 2
+    assert {(p.barcode, p.group) for p in d2.pots} == {(p.barcode, p.group) for p in d.pots}
 
 
-def test_window_lists_only_spares_planted_that_day(tmp_path):
+def test_window_lists_only_spares_of_that_planting_group(tmp_path):
     from PySide6 import QtWidgets
     import swap_app
     d, path = _late_map(tmp_path)
@@ -308,20 +322,36 @@ def test_window_lists_only_spares_planted_that_day(tmp_path):
     w.failed.setText(late.barcode); w._failed_entered(focus=True)
     listed = [w.spare.itemData(i) for i in range(w.spare.count())]
     want = {p.barcode for p in w.design.pots if p.role == dc.SPARE and p.genotype == "B73"
-            and p.planted_with == "B"}
+            and p.group == late.group}
     assert set(listed) == want and "planted" in w.failed_info.text()
-    early = _first(w.design, role=dc.SPARE, genotype="B73", planted_with="A")
+    early = _first(w.design, role=dc.SPARE, genotype="B73", group=1)
     w.spare.setEditText(early.barcode); w._add()                     # scanned anyway
     assert w.pending == [] and "own age" in w.banner.text()
     w.close()
 
 
-def test_discard_keeps_spares_of_a_later_planting_day(tmp_path):
-    d, _ = _late_map(tmp_path)                       # A planted day 0, B day 2 (with spares)
+def test_discard_keeps_spares_of_a_later_planting_group(tmp_path):
+    d, _ = _late_map(tmp_path)                       # group 1 day 0, group 2 day 2
     first = min(S.planted(d, p) for p in d.pots)
-    gone = S.discard_spares(d, first + dt.timedelta(days=8))       # A's spares 8 days old
+    gone = S.discard_spares(d, first + dt.timedelta(days=8))       # group 1's: 8 days old
     kept = [p for p in d.pots if p.role == dc.SPARE]
-    assert gone and all(S.planted(d, d_p) == first for d_p in d.pots if d_p.barcode in gone)
-    assert kept and all(p.planted_with == "B" for p in kept)         # B's: 6 days old
+    assert gone and all(p.group == 1 for p in d.pots if p.barcode in gone)
+    assert kept and all(p.group == 2 for p in kept)                 # group 2's: 6 days old
     assert S.discard_spares(d, first + dt.timedelta(days=9))        # a day later they go
     assert not [p for p in d.pots if p.role == dc.SPARE]
+
+
+# ---------------------------------------------------------------- spares scale
+def test_spares_scale_with_each_groups_pots():
+    import math
+    plan = p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 22)],
+                   rows=[dc.PlanRow("B73", "A", "CTRL", 30, 9), dc.PlanRow("B73", "B", "CTRL", 15, 5),
+                         dc.PlanRow("Mo17", "A", "CTRL", 4)],
+                   spares_per_genotype_per_group=0, spare_percent=10)
+    d = dc.build(plan)
+    from collections import Counter
+    n = Counter((p.group, p.genotype) for p in d.pots if p.role in (dc.MEASURED, dc.SACRIFICIAL))
+    sp = Counter((p.group, p.genotype) for p in d.pots if p.role == dc.SPARE)
+    assert sp == {k: max(1, math.ceil(v / 10)) for k, v in n.items()}
+    assert sp[(1, "B73")] == 4 and sp[(2, "B73")] == 2 and sp[(1, "Mo17")] == 1
+    assert (2, "Mo17") not in sp                      # no Mo17 in group 2: no Mo17 spare

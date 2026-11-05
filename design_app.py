@@ -39,7 +39,7 @@ def example_plan() -> dc.Plan:
         planting_date=dt.date.today() + dt.timedelta(days=7), treatment_dap=14,
         cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24), dc.Cohort("C", 27)],
         rows=[dc.PlanRow("B73", c, t, 10, 3) for c in "ABC" for t in ("CTRL", "SN", "INH")],
-        wfps_target=0.40)
+        wfps_target=0.40, spare_percent=10)
 
 
 # ======================================================================================
@@ -137,10 +137,15 @@ class DesignWindow(QtWidgets.QMainWindow):
         tr = QtWidgets.QHBoxLayout(); tr.addWidget(self.treat_on); tr.addWidget(self.treat, 1)
         fl.addRow(tr)
         self.spares = QtWidgets.QSpinBox(); self.spares.setRange(0, 100)
-        self.spares.setToolTip("Spare pots of each genotype on EACH planting day (a group whose "
-                               "cohort is planted later has two): a spare only replaces a pot "
-                               "planted the same day. Placed at random like the rest.")
-        fl.addRow("Spares per genotype\nper planting day", self.spares)
+        self.spare_unit = QtWidgets.QComboBox()
+        self.spare_unit.addItems(["% of each group's pots", "per genotype per group"])
+        tip = ("Spare pots in EACH planting group (one planting date), per genotype: a spare "
+               "only replaces a pot of its genotype planted the same day. As a %, bigger groups "
+               "get more: 10 % of 39 pots is 4, of 20 pots is 2 (rounded up, at least 1). "
+               "Placed at random like the rest.")
+        self.spares.setToolTip(tip); self.spare_unit.setToolTip(tip)
+        sp = QtWidgets.QHBoxLayout(); sp.addWidget(self.spares); sp.addWidget(self.spare_unit, 1)
+        fl.addRow("Spares", sp)
         self.seed = QtWidgets.QSpinBox(); self.seed.setRange(0, 999999)
         self.seed.setToolTip("The same seed always gives the same layout and grouping. "
                              "Change it for a different randomisation.")
@@ -164,13 +169,17 @@ class DesignWindow(QtWidgets.QMainWindow):
         sl.addRow("Max N2O measurements / day", self.cap)
         self.min_gap = QtWidgets.QSpinBox(); self.min_gap.setRange(2, dc.MAX_STAGGER_DAYS)
         self.min_gap.setSuffix(" days")
-        self.min_gap.setToolTip("Shortest gap between planting groups. 3 (the default) gives "
-                                "one group's 24 h and 48 h N2O days, then the next group's "
+        self.min_gap.setToolTip("Shortest gap between planting rounds. 3 (the default) gives "
+                                "one round's 24 h and 48 h N2O days, then the next round's "
                                 "flood: a flood and N2O are never on the same day.")
-        sl.addRow("Min. gap between groups", self.min_gap)
+        sl.addRow("Min. gap between rounds", self.min_gap)
         self.groups = QtWidgets.QSpinBox(); self.groups.setRange(0, 50)
         self.groups.setSpecialValueText("Auto (fewest that fit)")
-        sl.addRow("Planting groups", self.groups)
+        self.groups.setToolTip("When the bench cannot measure every pot's N2O in a day, the "
+                               "pots are planted in rounds a few days apart. Each planting "
+                               "date is a planting group: a round is one group, or two when "
+                               "a cohort is planted later so its days do not collide.")
+        sl.addRow("Planting rounds", self.groups)
         note = QtWidgets.QLabel("Flood 24 h before the first N2O sample (never on an N2O day); "
                                 "N2O at 24 h and 48 h; harvest after the 48 h sample. Water "
                                 "Monday, Wednesday and Friday.")
@@ -274,6 +283,8 @@ class DesignWindow(QtWidgets.QMainWindow):
             w.valueChanged.connect(self._refresh_capacity)
         for w in (self.name, ):
             w.textChanged.connect(self._stale)
+        self.spare_unit.currentIndexChanged.connect(self._stale)
+        self.spare_unit.currentIndexChanged.connect(lambda _i: self._plan_edited())
         for w in (self.tables, self.zones, self.slots, self.cap, self.min_gap, self.groups,
                   self.treat, self.spares, self.seed):
             w.valueChanged.connect(self._stale)
@@ -292,7 +303,9 @@ class DesignWindow(QtWidgets.QMainWindow):
         self.treat_on.setChecked(p.treatment_dap is not None)
         self.treat.setEnabled(p.treatment_dap is not None)
         self.treat.setValue(p.treatment_dap or 0)
-        self.spares.setValue(p.spares_per_genotype_per_group)
+        pct = p.spare_percent > 0
+        self.spare_unit.setCurrentIndex(0 if pct else 1)
+        self.spares.setValue(round(p.spare_percent) if pct else p.spares_per_genotype_per_group)
         self.seed.setValue(p.seed)
         self.tables.setValue(p.tables)
         self.zones.setValue(p.zones_per_table)
@@ -363,7 +376,10 @@ class DesignWindow(QtWidgets.QMainWindow):
             tables=self.tables.value(), zones_per_table=self.zones.value(),
             slots_per_zone=self.slots.value(), max_measured_per_day=self.cap.value(),
             min_stagger_days=self.min_gap.value(), planting_groups=self.groups.value(),
-            spares_per_genotype_per_group=self.spares.value(), cohorts=cohorts, rows=rows)
+            spares_per_genotype_per_group=0 if self.spare_unit.currentIndex() == 0
+            else self.spares.value(),
+            spare_percent=float(self.spares.value()) if self.spare_unit.currentIndex() == 0
+            else 0.0, cohorts=cohorts, rows=rows)
 
     # ---- small helpers ----
     def _paint(self, color, text):
@@ -384,8 +400,11 @@ class DesignWindow(QtWidgets.QMainWindow):
             plan = self.read_plan()
             n = dc.count_pots(plan)
             cap = self.tables.value() * self.zones.value() * self.slots.value()
-            sp = plan.spares_per_genotype_per_group * len(dc.genotypes(plan))
-            spares = f" + {sp} spares per planting day" if sp else ""
+            if plan.spare_percent > 0:
+                spares = f" + spares ({plan.spare_percent:g} %)"
+            else:
+                sp = plan.spares_per_genotype_per_group * len(dc.genotypes(plan))
+                spares = f" + {sp} spares per planting group" if sp else ""
             self.total_lbl.setText(f"{n} pots{spares} / room for {cap}")
             self.total_lbl.setStyleSheet(f"font-weight:bold;color:{RED if n > cap else SLATE};")
         except dc.PlanError:
@@ -477,8 +496,10 @@ class DesignWindow(QtWidgets.QMainWindow):
         d = self.design
         warn = bool(d.warnings)
         self._paint(RED if warn else GREEN,
-                    f"{len(d.pots)} pots, {d.groups} planting group(s) "
-                    f"{d.stagger_days} days apart, max {d.max_load} N2O / day"
+                    f"{len(d.pots)} pots, {d.groups} planting group(s)"
+                    + (f" in {d.n_rounds} rounds {d.stagger_days} days apart"
+                       if d.n_rounds > 1 else "")
+                    + f", max {d.max_load} N2O / day"
                     + ("  (over capacity)" if warn else ""))
         self.summary.setPlainText(summary_text(d))
         self.save_b.setEnabled(True)
@@ -539,36 +560,39 @@ def summary_text(d: dc.Design) -> str:
     c = d.counts()
     out = [f"{len(d.pots)} pots: {c[dc.MEASURED]} measured, {c[dc.SACRIFICIAL]} sacrificial, "
            f"{c[dc.SPARE]} spare"
-           + (f" ({plan.spares_per_genotype_per_group} x {len(dc.genotypes(plan))} genotypes x "
-              f"{d.groups} planting groups)" if c[dc.SPARE] else ""),
+           + ((f" ({plan.spare_percent:g} % of each group's pots per genotype)"
+               if plan.spare_percent > 0 else
+               f" ({plan.spares_per_genotype_per_group} x {len(dc.genotypes(plan))} genotypes x "
+               f"{d.groups} planting groups)") if c[dc.SPARE] else ""),
            f"bench: {plan.tables} tables x {plan.zones_per_table} zones x "
            f"{plan.slots_per_zone} slots = {plan.capacity} places",
-           "", f"PLANTING GROUPS: {d.groups}, {d.stagger_days} days apart"]
+           "", f"PLANTING GROUPS: {d.groups} (one planting date each)"
+           + (f", in {d.n_rounds} rounds {d.stagger_days} days apart" if d.n_rounds > 1 else "")]
     per_g = Counter(p.group for p in d.pots)
+    sp_g = Counter(p.group for p in d.pots if p.role == dc.SPARE)
     meas = Counter((p.group, p.cohort) for p in d.pots if p.role == dc.MEASURED)
     for g in range(1, d.groups + 1):
-        coh = "  ".join(f"{k.name}:{meas[(g, k.name)]}" for k in plan.cohorts)
+        coh = "  ".join(f"{k.name}:{meas[(g, k.name)]}" for k in d.cohorts_of(g))
         out.append(f"  group {g}  plant {d.group_planting(g):%a %d %b %Y}  "
-                   f"{per_g[g]:>4} pots   measured {coh}")
+                   f"{per_g[g]:>4} pots ({sp_g[g]} spare)   measured {coh}")
     late = {k: v for k, v in d.offsets.items() if v}
     if late:
-        out.append("  planted later so their days do not collide (days after planting kept): "
-                   + ", ".join(f"cohort {k} +{v} d" for k, v in late.items()))
+        out.append("  planted later, as their own group, so their days do not collide (days "
+                   "after planting kept): " + ", ".join(f"cohort {k} +{v} d" for k, v in late.items()))
     out += ["", "SCHEDULE"]
     hours = sorted({h for k in plan.cohorts for h in k.measure_hours})   # every cohort's times
     out.append(f"  {'':6} {'plant':>10} {'treatment':>10} {'flood':>10} " + " ".join(
         f"{h} h N2O".rjust(10) for h in hours))
-    for g in range(1, d.groups + 1):
-        for k in plan.cohorts:
-            ev = dict((t.split(",")[0].replace("Sacrificial harvest", "flood").strip(), day)
-                      for day, t in d.events(g, k))
-            treat = ev.get("Treatment")
-            flood = ev.get("flood") or ev.get("Flood")
-            n2o = [ev.get(f"{h} h N2O") for h in hours]
-            fmt = lambda x, w: (f"{x:%a %d %b}" if x else "-").rjust(w)
-            out.append(f"  G{g} {k.name:<3} {fmt(d.planting(g, k.name), 10)} "
-                       f"{fmt(treat, 10)} {fmt(flood, 10)} "
-                       + " ".join(fmt(x, 10) for x in n2o))
+    for g, k in d.cells():
+        ev = dict((t.split(",")[0].replace("Sacrificial harvest", "flood").strip(), day)
+                  for day, t in d.events(g, k))
+        treat = ev.get("Treatment")
+        flood = ev.get("flood") or ev.get("Flood")
+        n2o = [ev.get(f"{h} h N2O") for h in hours]
+        fmt = lambda x, w: (f"{x:%a %d %b}" if x else "-").rjust(w)
+        out.append(f"  G{g} {k.name:<3} {fmt(d.planting(g, k.name), 10)} "
+                   f"{fmt(treat, 10)} {fmt(flood, 10)} "
+                   + " ".join(fmt(x, 10) for x in n2o))
     out += ["", f"N2O PER DAY (capacity {plan.max_measured_per_day})"]
     for day, n in d.calendar_load().items():
         flag = "  OVER" if n > plan.max_measured_per_day else ""
