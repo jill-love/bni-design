@@ -337,7 +337,8 @@ def test_every_task_kind_is_listed_once_per_repeat():
     t = d.tasks()
     assert [x.date for x in t] == sorted(x.date for x in t)
     one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments",
-                "KCl soil collection setup", "Run swaps", "Prep KCl extracts for shipping")
+                "KCl soil collection setup", "Run swaps", "Prep KCl extracts for shipping",
+                "Make the treatment solutions")
     for start in one_each:
         assert len(_named(t, start)) == 1, start
     per_cohort = ("Flood - ", "Wash pots")
@@ -428,6 +429,27 @@ def test_a_swaps_task_a_week_after_each_planting_day():
         assert len(swaps) == len(plant)                             # one per planting day
         assert sorted(x.date for x in swaps) == sorted(dc.workday(x.date, 5) for x in plant)
         assert all(x.date.weekday() < 5 for x in swaps)
+
+
+def test_treatments_are_made_the_working_day_before_the_first():
+    for plan in (p0_plan(), big_plan(), late_plan(), p0_plan(planting_date=MON + dt.timedelta(1))):
+        d = dc.build(plan)
+        t = d.tasks()
+        make = _named(t, "Make the treatment solutions")
+        apply = [x.date for x in _named(t, "Apply treatments")]
+        assert len(make) == 1 and make[0].section == "Treatment"
+        assert make[0].date == dc.workday(min(apply), -1) and make[0].date.weekday() < 5
+        for trt in ("CTRL", "SN"):
+            n = sum(p.treatment == trt and p.role in (dc.MEASURED, dc.SACRIFICIAL)
+                    for p in d.pots)
+            assert f"{trt} ({n} pots)" in make[0].notes
+
+
+@pytest.mark.parametrize("kw", [dict(treatment_dap=None),
+                                dict(rows=[dc.PlanRow("B73", c, "", 3) for c in "ABC"])])
+def test_no_treatments_nothing_to_make(kw):
+    t = dc.build(p0_plan(**kw)).tasks()
+    assert not _named(t, "Make the treatment solutions")
 
 
 def test_every_task_has_a_kind():
