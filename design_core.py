@@ -63,6 +63,10 @@ WATER_DAY_NAMES = "Mon, Wed, Fri"
 N2O_COLUMNS = 3            # pots per N2O load (one per chamber)
 
 MEASURED, SACRIFICIAL, SPARE = "MEASURED", "SACRIFICIAL", "SPARE"
+# after swaps (swaps.py): a pot that failed and was replaced by a spare, and a spare that
+# was not needed and is thrown out. Both stay on record but are no longer grown.
+FAILED, DISCARDED = "FAILED", "DISCARDED"
+GONE = (FAILED, DISCARDED)
 
 # Tasks off the bench schedule, in working days (Mon-Fri) from the event they follow
 # (Excel's WORKDAY, so the workbook recalculates them). Negative = before.
@@ -306,6 +310,14 @@ class Pot:
     table: int = 0
     zone: int = 0
     slot: int = 0
+    was: str = ""                  # FAILED: the role it had (MEASURED / SACRIFICIAL)
+    swap: str = ""                 # the other pot of its swap: the spare that replaced a
+                                   # FAILED pot, or the failed pot a promoted spare replaces
+
+    @property
+    def active(self) -> bool:
+        """Still grown and dosed: not failed, not a discarded spare."""
+        return self.role not in GONE
 
     @property
     def cell(self) -> tuple:
@@ -319,12 +331,14 @@ class Pot:
     def label(self) -> str:
         """Human tag: genotype-cohort-treatment-r03 / -SAC2 / SPARE-01 (G2-SPARE-01 when
         there are several planting groups: a spare only replaces a pot of its own group)."""
-        if self.role == SPARE:
+        role = self.was if self.role == FAILED else self.role
+        if role in (SPARE, DISCARDED):
             g = f"G{self.group}-" if self.group_in_tag else ""
-            return f"{self.genotype}-{g}SPARE-{self.rep:02d}"
+            return (f"{self.genotype}-{g}SPARE-{self.rep:02d}"
+                    + ("-DISCARDED" if role == DISCARDED else ""))
         parts = [self.genotype, self.cohort] + ([self.treatment] if self.treatment else [])
-        rep = f"r{self.rep:02d}" if self.role == MEASURED else f"SAC{self.rep}"
-        return "-".join(parts + [rep])
+        rep = f"r{self.rep:02d}" if role == MEASURED else f"SAC{self.rep}"
+        return "-".join(parts + [rep]) + ("-FAILED" if self.role == FAILED else "")
 
 
 def make_pots(plan: Plan) -> list[Pot]:
@@ -576,6 +590,16 @@ def workday(day: dt.date, n: int) -> dt.date:
         while day.weekday() >= 5:
             day += step
     return day
+
+
+@dataclass
+class Swap:
+    """A failed pot replaced by a spare of its own genotype and planting group (swaps.py)."""
+    date: dt.date
+    failed: str                    # barcode
+    spare: str                     # barcode
+    role: str = ""                 # the label the spare takes over, e.g. B73-C-CTRL-r04
+    note: str = ""
 
 
 @dataclass

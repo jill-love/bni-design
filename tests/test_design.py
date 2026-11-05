@@ -547,7 +547,9 @@ def test_workbook_sheets_and_jars(tmp_path):
            for k in ("flood", "measure", "harvest")]
     assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups",
                                                                        "asana_tasks", "jars",
-                                                                       "admin", "info"]
+                                                                       "admin", "info",
+                                                                       "plan"]
+    assert wb["plan"].sheet_state == "hidden"
     jars = wb["jars"]
     assert [c.value for c in jars[1]] == ["barcode", "tag"]
     rows = list(jars.iter_rows(min_row=2, values_only=True))
