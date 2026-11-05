@@ -71,7 +71,7 @@ The same random seed always gives the same design.
 
 `asana_team.xlsx`, beside the program, says who does each kind of task, so the Asana import comes with assignees and collaborators already filled in. It is never edited in the setup window.
 
-- Make it once: `python team.py` writes it from the lab's work breakdown (primary worker = Assignee; second and supervisory workers = Collaborators).
+- Make it once: `python team.py` writes it from the lab's work breakdown (primary worker = Assignee; second and supervisory workers = Collaborators). When the program gains a new kind of task, run `python team.py` again: it adds a row for it (with its default) and leaves everything else as it is.
 - **people** tab: everyone's name and **Asana email** (fill these in; a person with no email is left off the import).
 - **roles** tab: for each kind of task, the Assignee and up to two Collaborators, by name. Kinds left blank (e.g. Flood) are left unassigned.
 

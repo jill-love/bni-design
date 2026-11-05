@@ -129,3 +129,25 @@ def test_swaps_keep_the_assignment_edits(tmp_path):
                                 dt.date(2026, 11, 10))])
     ws = openpyxl.load_workbook(path)[dx.ASSIGN_SHEET]
     assert ws.cell(r, 3).value == "Lina"
+
+
+def test_upgrade_adds_new_kinds_and_keeps_the_rest(tmp_path):
+    path = str(tmp_path / "team.xlsx")
+    old = _team()
+    old.roles = {k: v for k, v in old.roles.items() if k != "make_treatments"}
+    old.roles["flood"] = ("Jill", ("Sarah (Undergrad #1)",))         # edited by the lab
+    tm.write(old, path)
+    wb = openpyxl.load_workbook(path)                                 # a file from before
+    ro = wb["roles"]
+    r = next(c.row for c in ro["A"] if c.value == "make_treatments")
+    ro.delete_rows(r)
+    wb.save(path)
+    assert "make_treatments" not in tm.load(path).roles
+    assert tm.upgrade(path) == ["make_treatments"]
+    back = tm.load(path)
+    assert back.role("make_treatments") == ("Lina", ())
+    assert back.role("flood") == ("Jill", ("Sarah (Undergrad #1)",))
+    assert back.people == PEOPLE
+    kinds = [c.value for c in openpyxl.load_workbook(path)["roles"]["A"]][1:]
+    assert kinds == list(dc.TASK_KINDS)                               # in order
+    assert tm.upgrade(path) == []                                     # nothing twice
