@@ -31,7 +31,7 @@ import design_xlsx as dx
 
 # tabs the program writes; anything else in a design map was added by hand and is copied
 GENERATED = {"timeline", "design", "layout", "tags", "groups", "asana_tasks", "jars",
-             "admin", "info", "swaps", dx.PLAN_SHEET}
+             "admin", "info", "swaps", dx.PLAN_SHEET, dx.ASSIGN_SHEET}
 PER_COHORT = ("flood_", "measure_", "harvest_")
 
 
@@ -255,7 +255,7 @@ def _carry(old_wb, new_wb) -> dict:
         old = old_wb[name]
         if name.startswith(PER_COHORT) and name in new_wb.sheetnames:
             report["cells"] += _carry_sheet(old, new_wb[name])
-        elif name == "timeline":              # yellow inputs edited in Excel
+        elif name in ("timeline", dx.ASSIGN_SHEET):   # yellow inputs edited in Excel
             new = new_wb[name]
             for row in new.iter_rows():
                 for c in row:

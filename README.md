@@ -39,7 +39,7 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | N2O measurements | each of the cohort's N2O days |
    | Plant harvest and soil sample collection | flood day (sacrificial pots) and after the last N2O (final) |
    | KCl extractions | once the **last** harvest is in: all soil samples (sacrificial and final) split into the fewest batches of at most 72, as equal as they divide (117 samples: 59 + 58), one batch per working day starting the working day after the last harvest. Each task lists the harvests in its batch. |
-   | KCl analysis (plate reader) | the working day after each batch's extraction |
+   | Prep KCl extracts for shipping | once, the working day after the last extraction batch |
    | Plant dry weights measure & record | 3 working days after each harvest |
    | Wash pots for reuse | the working day after the final harvest |
 
@@ -59,11 +59,22 @@ The same random seed always gives the same design.
 | `harvest_*` | The measured pots after the last N2O time, with shoot and root weight columns. |
 | `tags` | Barcode, tag text and position for label printing, by planting group. |
 | `groups` | Planting groups and the N2O load per day as designed. |
-| `asana_tasks` | One row per task: Name, Due Date, Section/Column, Description, and nothing else. **File > Save As > CSV**, then in Asana: project > Import > CSV. Due dates follow the timeline's inputs. Watering has a few spare rows at the bottom, used when an edit adds watering days; a watering row whose day an edit removes goes blank. Delete blank rows (filter on Name) before saving the CSV. |
+| `assignments` | Who does each kind of task (Assignee, Collaborator 1, Collaborator 2) and everyone's Asana email, copied from the team file (below). Edit the yellow cells for this experiment. |
+| `asana_tasks` | One row per task: Name, Due Date, Section/Column, Description, Assignee, Collaborators (emails, looked up in `assignments`), and nothing else. **File > Save As > CSV**, then in Asana: project > Import > CSV. Due dates follow the timeline's inputs. Watering has a few spare rows at the bottom, used when an edit adds watering days; a watering row whose day an edit removes goes blank. Delete blank rows (filter on Name) before saving the CSV. |
 | `jars` | `barcode` + `tag` (the tag ends with the position). The pots for the dosing station. |
 | `admin` | The dosing station's WFPS inputs, as fractions (`wfps_target` 0.40 for 40 %), plus `trial_id`, the planting date and `profile` = `wet_up`. Values only, no formulas. With `jars`, the workbook is a complete trial: **Start New Trial...** on the station takes it as is. Any input left blank in the window is an empty yellow cell marked REQUIRED; fill it in before provisioning. |
 | `swaps` | Written by the swap tool: date, failed pot, the spare that replaced it, the role it took over, note. |
 | `info` | The plan as entered, the seed and the version. A hidden `plan` tab holds the same as JSON, for the swap tool. |
+
+## The team file: who does what
+
+`asana_team.xlsx`, beside the program, says who does each kind of task, so the Asana import comes with assignees and collaborators already filled in. It is never edited in the setup window.
+
+- Make it once: `python team.py` writes it from the lab's work breakdown (primary worker = Assignee; second and supervisory workers = Collaborators).
+- **people** tab: everyone's name and **Asana email** (fill these in; a person with no email is left off the import).
+- **roles** tab: for each kind of task, the Assignee and up to two Collaborators, by name. Kinds left blank (e.g. Flood) are left unassigned.
+
+It stays on the computer (git ignores `*.xlsx`), so the emails are never pushed to GitHub. Each design map gets a copy as its `assignments` tab: change someone for one experiment there, and the swap tool keeps those edits. Without a team file the tab and the two columns are blank.
 
 ## Run it
 

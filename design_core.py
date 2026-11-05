@@ -78,10 +78,29 @@ TASK_LAGS = {
                             # experiment's first planting, with the other setup
     "swaps": 5,             # run the swap tool: a week (5 working days) after each planting
     "kcl_extract": 1,       # KCl batch 1: the working day after the LAST harvest; batch k: k
-    "kcl_analysis": 1,      # plate reader: working days after each batch's extraction
+    "kcl_ship": 1,          # prep the extracts for shipping: the working day after the last batch
     "dry_weights": 3,       # oven-dried: 3 working days after a harvest
     "wash": 1,              # wash pots: the working day after the final harvest
 }
+# Every kind of task, in the order the team file (team.py) lists them: key -> what it is.
+TASK_KINDS = {
+    "kcl_setup": "KCl soil collection setup (supplies, printing & labeling tubes)",
+    "prefill": "Pre-fill pots with weighed soil",
+    "plant": "Label pots, plant seed, and initial wet-up",
+    "label_tables": "Label tables with treatment and group information",
+    "germination": "Check ZeaL germination",
+    "swaps": "Run swaps (failed pots, unused spares)",
+    "watering": "Maintenance watering",
+    "treatment": "Apply treatments",
+    "flood": "Flood",
+    "n2o": "N2O measurements",
+    "harvest": "Plant harvest and soil sample collection",
+    "dry_weights": "Plant dry weights measure & record",
+    "kcl_extract": "KCl extractions",
+    "kcl_ship": "Prep KCl extracts for shipping",
+    "wash": "Wash pots for reuse",
+}
+
 KCL_BATCH_MAX = 72         # soil samples one KCl extraction can take
 GERMINATION_WORKDAYS = 5    # ZeaL germination check: the weekdays of the week after planting
 
@@ -636,6 +655,7 @@ class Task:
     notes: str = ""
     anchor: tuple = ()
     lag: int | None = None
+    kind: str = ""                 # TASK_KINDS key: who does it (the team file's roles)
 
 
 # ======================================================================================
@@ -780,10 +800,10 @@ class Design:
         many = self.groups > 1
         who = lambda g, c: f"cohort {c}" + (f", group {g}" if many else "")
 
-        def add(anchor, n, name, section, notes=""):
+        def add(anchor, n, name, section, notes="", kind=""):
             day = self.anchor_date(anchor)
             day = day if n is None else workday(day, n)
-            out.append(Task(day, name, section, notes, anchor, n))
+            out.append(Task(day, name, section, notes, anchor, n, kind))
 
         for g in range(1, self.groups + 1):
             days = self.planting_days(g)
@@ -796,23 +816,24 @@ class Design:
                 n = sum(p.group == g and self.pot_planting(p) == day for p in self.pots)
                 at = ("plant", g, cs[0])
                 add(at, lag["prefill"], f"Pre-fill pots with weighed soil{sfx}", "Setup",
-                    f"{n} pots")
+                    f"{n} pots", "prefill")
                 add(at, None, f"Label, plant seed, and initial wet-up of pots{sfx}",
-                    "Planting", f"{n} pots")
+                    "Planting", f"{n} pots", "plant")
                 add(at, None, f"Label tables with treatment and group information per pot"
-                    f"{sfx}", "Planting", "positions and tags: design map, tags sheet")
+                    f"{sfx}", "Planting", "positions and tags: design map, tags sheet", "label_tables")
                 # the 7 days after planting always hold 5 weekdays: working days 1 to 5
                 for k in range(1, GERMINATION_WORKDAYS + 1):
                     add(at, k, f"If using ZeaL genotypes, check for germination{sfx}",
-                        "Planting", f"check {k} of {GERMINATION_WORKDAYS}")
+                        "Planting", f"check {k} of {GERMINATION_WORKDAYS}", "germination")
                 nsp = sum(p.group == g and p.role == SPARE and self.pot_planting(p) == day
                           for p in self.pots)
                 add(at, lag["swaps"], f"Run swaps: replace failed pots with spares, discard "
                     f"unused spares{sfx}", "Planting",
                     f"swap tool (run_swaps.bat) on the design map, then reload the trial in "
-                    f"the dosing station; {nsp} spare(s) planted that day")
+                    f"the dosing station; {nsp} spare(s) planted that day", "swaps")
                 if plan.treatment_dap is not None:
-                    add(("treat", g, cs[0]), None, f"Apply treatments{sfx}", "Treatment")
+                    add(("treat", g, cs[0]), None, f"Apply treatments{sfx}", "Treatment",
+                        kind="treatment")
             for c in plan.cohorts:
                 w = who(g, c.name)
                 sac = sum(p.role == SACRIFICIAL and p.group == g and p.cohort == c.name
@@ -824,17 +845,17 @@ class Design:
                 harvests.append((last, f"final harvest, {meas} pots"))
                 add(("flood", g, c.name), None, f"Flood - {w}", "N2O",
                     (f"harvest the {sac} sacrificial pots first; " if sac else "")
-                    + f"flood {meas} pots in the flood sheet's order")
+                    + f"flood {meas} pots in the flood sheet's order", "flood")
                 for h, off in zip(c.measure_hours, c.offsets):
                     add(("n2o", g, c.name, off), None, f"N2O measurements, {h} h - {w}", "N2O",
-                        f"{meas} pots")
+                        f"{meas} pots", "n2o")
                 for anchor, what in harvests:
                     add(anchor, None, f"Plant harvest and soil sample collection - {w}",
-                        "Harvest", what)
+                        "Harvest", what, "harvest")
                     add(anchor, lag["dry_weights"], f"Plant dry weights measure & record - {w}",
-                        "Harvest", what)
+                        "Harvest", what, "dry_weights")
                 add(last, lag["wash"], f"Wash pots for reuse - {w}", "Cleanup",
-                    f"{meas + sac} pots")
+                    f"{meas + sac} pots", "wash")
         # KCl tubes for every soil sample, prepared in one session with the other setup
         hv = self.harvests()
         if hv:
@@ -845,21 +866,25 @@ class Design:
             add(("plant", 1, first), lag["kcl_setup"],
                 "KCl soil collection setup (gathering supplies, printing & labeling tubes)",
                 "Setup", f"{sum(per.values())} tubes, every harvest of the experiment: "
-                + ", ".join(f"{k} {v}" for k, v in per.items()))
+                + ", ".join(f"{k} {v}" for k, v in per.items()), "kcl_setup")
         # KCl: the soil samples wait until the last harvest, then go in a few equal batches
-        # on consecutive working days, each read on the plate reader the day after
+        # on consecutive working days; the extracts are prepped for shipping the day after
         batches = self.kcl_batches()
         for k, parts in enumerate(batches, 1):
             n = sum(x for _, x in parts)
             of = f" (batch {k} of {len(batches)})" if len(batches) > 1 else ""
             what = f"{n} samples: " + ", ".join(f"{name} {x}" for name, x in parts)
             add(("last_harvest",), lag["kcl_extract"] + k - 1, f"KCl extractions{of}", "KCl",
-                what)
-            add(("last_harvest",), lag["kcl_extract"] + k - 1 + lag["kcl_analysis"],
-                f"KCl analysis (plate reader){of}", "KCl", what)
+                what, "kcl_extract")
+        if batches:
+            n = sum(x for b in batches for _, x in b)
+            add(("last_harvest",), lag["kcl_extract"] + len(batches) - 1 + lag["kcl_ship"],
+                "Prep KCl extracts for shipping", "KCl",
+                f"{n} extracts from {len(batches)} batch(es)", "kcl_ship")
         # watering: one task per day, whatever is still being watered that day
         for k, day in enumerate(self.water_days_all(), 1):
-            add(("water", k), None, "Maintenance watering", "Watering", self.water_who(day))
+            add(("water", k), None, "Maintenance watering", "Watering", self.water_who(day),
+                "watering")
         order = {"Setup": 0, "Planting": 1, "Watering": 2, "Treatment": 3, "KCl": 4,
                  "Harvest": 5, "N2O": 6, "Cleanup": 7}
         out.sort(key=lambda t: (t.date, order.get(t.section, 9), t.name))

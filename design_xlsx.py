@@ -128,6 +128,8 @@ class Refs:
         self.water_who = ""        # calendar column: who is watered that day
         self.calendar = ""         # calendar column: the dates
         self.last_harvest = ""     # the experiment's last harvest date (KCl batches follow it)
+        self.roles = ""            # assignments tab: kind | task | assignee | collaborators
+        self.people = ""           # assignments tab: name | Asana email
 
     def planting(self, g, c):
         """Group g's planting date for cohort c (spares, c = "": the group date)."""
@@ -641,6 +643,61 @@ def _groups(wb, d: dc.Design, refs: Refs) -> None:
 WATER_SLACK = 6            # spare watering rows, for dates edited later
 
 
+ASSIGN_SHEET = "assignments"
+EXTRA_PEOPLE = 10          # blank yellow rows on the people table, to add someone
+
+
+def _assignments(wb, d: dc.Design, refs: Refs, team) -> None:
+    """Who does which kind of task, copied from the team file (team.py) and editable for
+    this experiment: the asana_tasks Assignee / Collaborators columns look it up."""
+    import team as tm
+    ws = wb.create_sheet(ASSIGN_SHEET)
+    ws["A1"] = ("Who does what in this experiment: names from the people table on the right, "
+                "copied from the team file (asana_team.xlsx). Edit the yellow cells; the "
+                "asana_tasks Assignee and Collaborators columns follow. A blank email leaves "
+                "the person off.")
+    ws["A1"].font = NOTE
+    team = team or tm.Team()
+    head = 3
+    _header(ws, head, ["kind", "Task", "Assignee"]
+            + [f"Collaborator {i}" for i in range(1, tm.COLLABORATORS + 1)])
+    r = head
+    for kind, what in dc.TASK_KINDS.items():
+        r += 1
+        a, cs = team.role(kind)
+        ws.cell(row=r, column=1, value=kind).font = NOTE
+        ws.cell(row=r, column=2, value=what)
+        for j, v in enumerate([a] + [cs[i] if i < len(cs) else "" for i in
+                                     range(tm.COLLABORATORS)]):
+            _input(ws.cell(row=r, column=3 + j, value=v or None))
+    last_col = L(3 + tm.COLLABORATORS)
+    refs.roles = f"{ASSIGN_SHEET}!$A${head + 1}:${last_col}${r}"
+    pc = 4 + tm.COLLABORATORS + 1                       # people table, after a gap
+    _header(ws, head, ["Name", "Asana email"], col=pc)
+    people = list(team.people.items())
+    for i in range(len(people) + EXTRA_PEOPLE):
+        n, e = people[i] if i < len(people) else ("", "")
+        _input(ws.cell(row=head + 1 + i, column=pc, value=n or None))
+        _input(ws.cell(row=head + 1 + i, column=pc + 1, value=e or None))
+    end = head + len(people) + EXTRA_PEOPLE
+    refs.people = f"{ASSIGN_SHEET}!${L(pc)}${head + 1}:${L(pc + 1)}${end}"
+    _widths(ws, (13, 56, 22) + (22,) * tm.COLLABORATORS + (3, 24, 32))
+
+
+def _who(refs: Refs, kind: str) -> tuple[str, str]:
+    """Excel expressions for a task kind's assignee email and collaborators' emails
+    ("a@x, b@y"), looked up in the assignments tab. Blank when no name or no email."""
+    import team as tm
+    name = lambda col: f'VLOOKUP("{kind}",{refs.roles},{col},0)&""'
+    email = lambda n: (f'IF({n}="","",IFERROR(VLOOKUP({n},{refs.people},2,0)&"",""))')
+    assignee = email(name(3))
+    cs = [email(name(4 + i)) for i in range(tm.COLLABORATORS)]
+    collab = cs[0]
+    for c in cs[1:]:
+        collab = f'{collab}&IF(AND({collab}<>"",{c}<>""),", ","")&{c}'
+    return assignee, collab
+
+
 def _asana(wb, d: dc.Design, refs: Refs) -> None:
     """Header + one row per task and nothing else, so File > Save As > CSV imports as is.
     Column names are the ones Asana's CSV importer maps by itself. Every due date is a
@@ -654,11 +711,12 @@ def _asana(wb, d: dc.Design, refs: Refs) -> None:
         for g in range(1, d.groups + 1) for c in d.plan.cohorts
         for kind in (dc.SACRIFICIAL, dc.MEASURED)
         if any(p.role == kind and p.group == g and p.cohort == c.name for p in d.pots)) + ")"
-    _header(ws, 1, ["Name", "Due Date", "Section/Column", "Description"])
+    _header(ws, 1, ["Name", "Due Date", "Section/Column", "Description", "Assignee",
+                    "Collaborators"])
     tasks = d.tasks()
     n_water = sum(t.anchor[0] == "water" for t in tasks)
-    extra = [dc.Task(None, "Maintenance watering", "Watering", "", ("water", n_water + k))
-             for k in range(1, WATER_SLACK + 1)]
+    extra = [dc.Task(None, "Maintenance watering", "Watering", "", ("water", n_water + k),
+                     kind="watering") for k in range(1, WATER_SLACK + 1)]
     for r, t in enumerate(tasks + extra, 2):
         x = refs.anchor(t.anchor)
         due = (x if t.lag is None else f"WORKDAY({x},{t.lag})")
@@ -675,9 +733,15 @@ def _asana(wb, d: dc.Design, refs: Refs) -> None:
             ws.cell(row=r, column=3, value=t.section)
             ws.cell(row=r, column=4, value=t.notes or None)
         ws.cell(row=r, column=2).number_format = "mm/dd/yyyy"
-    _widths(ws, (78, 12, 15, 60))
+        if t.kind:
+            a, c = _who(refs, t.kind)
+            if t.anchor[0] == "water":                  # a spare watering row stays blank
+                a, c = f'IF(B{r}="","",{a})', f'IF(B{r}="","",{c})'
+            ws.cell(row=r, column=5, value=f"={a}")
+            ws.cell(row=r, column=6, value=f"={c}")
+    _widths(ws, (78, 12, 15, 60, 28, 44))
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:D{ws.max_row}"
+    ws.auto_filter.ref = f"A1:F{ws.max_row}"
 
 
 def _jars(wb, d: dc.Design) -> None:
@@ -794,7 +858,10 @@ def _plan(wb, d: dc.Design) -> None:
     ws.sheet_state = "hidden"
 
 
-def write(d: dc.Design, path: str, swaps: list | None = None) -> None:
+AUTO = object()                 # write(team=AUTO): the team file beside the program, if any
+
+
+def write(d: dc.Design, path: str, swaps: list | None = None, team=AUTO) -> None:
     wb = Workbook()
     wb.remove(wb.active)
     refs = _timeline(wb, d)
@@ -803,6 +870,10 @@ def write(d: dc.Design, path: str, swaps: list | None = None) -> None:
     _cohort_sheets(wb, d, refs)
     _tags(wb, d, refs)
     _groups(wb, d, refs)
+    if team is AUTO:
+        import team as tm
+        team = tm.load()
+    _assignments(wb, d, refs, team)
     _asana(wb, d, refs)
     _jars(wb, d)
     _admin(wb, d)

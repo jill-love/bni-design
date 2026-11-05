@@ -337,7 +337,7 @@ def test_every_task_kind_is_listed_once_per_repeat():
     t = d.tasks()
     assert [x.date for x in t] == sorted(x.date for x in t)
     one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments",
-                "KCl soil collection setup", "Run swaps")
+                "KCl soil collection setup", "Run swaps", "Prep KCl extracts for shipping")
     for start in one_each:
         assert len(_named(t, start)) == 1, start
     per_cohort = ("Flood - ", "Wash pots")
@@ -346,8 +346,8 @@ def test_every_task_kind_is_listed_once_per_repeat():
     assert len(_named(t, "N2O measurements")) == 3 * 2          # 24 h and 48 h per cohort
     for start in ("Plant harvest", "Plant dry weights"):
         assert len(_named(t, start)) == 3 * 2, start            # sacrificial + final
-    for start in ("KCl extractions", "KCl analysis"):
-        assert len(_named(t, start)) == 2, start                # 117 samples: 2 batches
+    assert len(_named(t, "KCl extractions")) == 2               # 117 samples: 2 batches
+    assert not _named(t, "KCl analysis")
     water = _named(t, "Maintenance watering")
     assert [x.date for x in water] == sorted({w for c in d.plan.cohorts for w in d.water(1, c)})
 
@@ -391,9 +391,9 @@ def test_kcl_batches_are_few_equal_and_after_the_last_harvest(plan, sizes):
     last = max(day for day, _, _ in d.harvests())
     t = d.tasks()
     ext = [x.date for x in _named(t, "KCl extractions")]
-    ana = [x.date for x in _named(t, "KCl analysis")]
+    ship = [x.date for x in _named(t, "Prep KCl extracts for shipping")]
     assert ext == [dc.workday(last, k) for k in range(1, len(sizes) + 1)]
-    assert ana == [dc.workday(e, 1) for e in ext]
+    assert ship == [dc.workday(ext[-1], 1)]                     # once, after the last batch
     if len(sizes) == 1:
         assert [x.name for x in _named(t, "KCl extractions")] == ["KCl extractions"]
 
@@ -430,6 +430,13 @@ def test_a_swaps_task_a_week_after_each_planting_day():
         assert all(x.date.weekday() < 5 for x in swaps)
 
 
+def test_every_task_has_a_kind():
+    for plan in (p0_plan(), big_plan(), late_plan()):
+        t = dc.build(plan).tasks()
+        assert all(x.kind in dc.TASK_KINDS for x in t)
+        assert {x.kind for x in t} == set(dc.TASK_KINDS)
+
+
 def test_several_groups_name_the_group():
     d = dc.build(big_plan())
     assert d.groups > 1
@@ -449,7 +456,8 @@ def test_asana_sheet_is_a_plain_import_table(tmp_path):
     dx.write(d, str(path))
     ws = openpyxl.load_workbook(path)["asana_tasks"]
     rows = list(ws.iter_rows(values_only=True))
-    assert rows[0] == ("Name", "Due Date", "Section/Column", "Description")
+    assert rows[0] == ("Name", "Due Date", "Section/Column", "Description", "Assignee",
+                       "Collaborators")
     assert len(rows) - 1 == len(d.tasks()) + dx.WATER_SLACK
     assert all(str(r[1]).startswith("=") for r in rows[1:])        # every date is a formula
     assert ws["B2"].number_format == "mm/dd/yyyy"
@@ -570,6 +578,7 @@ def test_workbook_sheets_and_jars(tmp_path):
     per = [f"{k}_G{g}_{c}" for g in range(1, d.groups + 1) for c in "AB"
            for k in ("flood", "measure", "harvest")]
     assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups",
+                                                                       "assignments",
                                                                        "asana_tasks", "jars",
                                                                        "admin", "info",
                                                                        "plan"]
