@@ -37,8 +37,8 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Flood | flood day |
    | N2O measurements | each of the cohort's N2O days |
    | Plant harvest and soil sample collection | flood day (sacrificial pots) and after the last N2O (final) |
-   | KCl extractions | the working day after each harvest |
-   | KCl analysis (plate reader) | the working day after each extraction |
+   | KCl extractions | once the **last** harvest is in: all soil samples (sacrificial and final) split into the fewest batches of at most 72, as equal as they divide (117 samples: 59 + 58), one batch per working day starting the working day after the last harvest. Each task lists the harvests in its batch. |
+   | KCl analysis (plate reader) | the working day after each batch's extraction |
    | Plant dry weights measure & record | 3 working days after each harvest |
    | Wash pots for reuse | the working day after the final harvest |
 

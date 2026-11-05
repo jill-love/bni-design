@@ -127,6 +127,7 @@ class Refs:
         self.water_days = ""       # calendar column: the date when anything is watered, else ""
         self.water_who = ""        # calendar column: who is watered that day
         self.calendar = ""         # calendar column: the dates
+        self.last_harvest = ""     # the experiment's last harvest date (KCl batches follow it)
 
     def planting(self, g, c):
         """Group g's planting date for cohort c (spares, c = "": the group date)."""
@@ -149,6 +150,8 @@ class Refs:
             return self.flood_date(x[0], x[1])
         if kind == "n2o":
             return self.n2o_date(*x)
+        if kind == "last_harvest":
+            return self.last_harvest
         return f"SMALL({self.water_days},{x[0]})"                 # "water"
 
 
@@ -623,6 +626,12 @@ def _asana(wb, d: dc.Design, refs: Refs) -> None:
     moves the tasks. Watering is the n-th watering day of the timeline, with a few spare
     rows that stay blank unless edited dates add watering days."""
     ws = wb.create_sheet("asana_tasks")
+    refs.last_harvest = "MAX(" + ",".join(
+        refs.flood_date(g, c.name) if kind == dc.SACRIFICIAL
+        else refs.n2o_date(g, c.name, c.last_offset)
+        for g in range(1, d.groups + 1) for c in d.plan.cohorts
+        for kind in (dc.SACRIFICIAL, dc.MEASURED)
+        if any(p.role == kind and p.group == g and p.cohort == c.name for p in d.pots)) + ")"
     _header(ws, 1, ["Name", "Due Date", "Section/Column", "Description"])
     tasks = d.tasks()
     n_water = sum(t.anchor[0] == "water" for t in tasks)

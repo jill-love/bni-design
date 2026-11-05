@@ -343,8 +343,10 @@ def test_every_task_kind_is_listed_once_per_repeat():
     for start in per_cohort:
         assert len(_named(t, start)) == 3, start
     assert len(_named(t, "N2O measurements")) == 3 * 2          # 24 h and 48 h per cohort
-    for start in ("Plant harvest", "KCl extractions", "KCl analysis", "Plant dry weights"):
+    for start in ("Plant harvest", "Plant dry weights"):
         assert len(_named(t, start)) == 3 * 2, start            # sacrificial + final
+    for start in ("KCl extractions", "KCl analysis"):
+        assert len(_named(t, start)) == 2, start                # 117 samples: 2 batches
     water = _named(t, "Maintenance watering")
     assert [x.date for x in water] == sorted({w for c in d.plan.cohorts for w in d.water(1, c)})
 
@@ -367,14 +369,41 @@ def test_lab_tasks_are_on_working_days_after_the_harvest():
     for c in d.plan.cohorts:
         final = d.events(1, c)[-1][0]
         mine = [x for x in t if x.name.endswith(f"cohort {c.name}")]
-        ext = [x.date for x in mine if x.name.startswith("KCl extractions")]
-        ana = [x.date for x in mine if x.name.startswith("KCl analysis")]
         setup = [x.date for x in mine if x.name.startswith("KCl soil collection setup")]
         harvest = [x.date for x in mine if x.name.startswith("Plant harvest")]
-        assert all(a > e for a, e in zip(ana, ext)) and all(e > h for e, h in zip(ext, harvest))
         assert setup[0] < min(harvest) and max(harvest) == final
         wash = [x.date for x in mine if x.name.startswith("Wash pots")]
         assert wash[0] > final
+
+
+@pytest.mark.parametrize("plan, sizes", [
+    (p0_plan(), [59, 58]),                                      # 90 measured + 27 SAC = 117
+    (big_plan(), [63, 63, 63, 63]),                             # 252
+    (p0_plan(rows=[dc.PlanRow("B73", "A", "CTRL", 10, 2)], cohorts=[dc.Cohort("A", 21)]),
+     [12])])
+def test_kcl_batches_are_few_equal_and_after_the_last_harvest(plan, sizes):
+    d = dc.build(plan)
+    batches = d.kcl_batches()
+    assert [sum(n for _, n in b) for b in batches] == sizes
+    assert max(sizes) <= dc.KCL_BATCH_MAX
+    samples = sum(p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)
+    assert sum(sizes) == samples
+    last = max(day for day, _, _ in d.harvests())
+    t = d.tasks()
+    ext = [x.date for x in _named(t, "KCl extractions")]
+    ana = [x.date for x in _named(t, "KCl analysis")]
+    assert ext == [dc.workday(last, k) for k in range(1, len(sizes) + 1)]
+    assert ana == [dc.workday(e, 1) for e in ext]
+    if len(sizes) == 1:
+        assert [x.name for x in _named(t, "KCl extractions")] == ["KCl extractions"]
+
+
+def test_kcl_batches_fill_in_harvest_order():
+    d = dc.build(p0_plan())
+    b = d.kcl_batches()
+    assert b[0][0] == ("A sacrificial", 9) and b[-1][-1] == ("C final", 30)
+    split = [name for name, _ in b[0]][-1]                      # one harvest spans the two
+    assert split == [name for name, _ in b[1]][0] == "B final"
 
 
 def test_several_groups_name_the_group():
@@ -499,9 +528,12 @@ def test_asana_dates_follow_timeline_edits(tmp_path):
     wb.save(path)
     d.plan.planting_date = MON + dt.timedelta(days=3)
     d.plan.cohort("B").first_n2o_dap = 26
-    want = _expected(d)
-    assert want != _expected(dc.build(p0_plan()))                 # the edit moved things
-    assert _asana_values(path) == want
+    # KCl batch notes (which harvests) are written once; their dates follow the edit
+    strip = lambda rows: sorted(((n, day, "" if n.startswith("KCl") else x) for n, day, x in rows),
+                                key=str)
+    want = strip(_expected(d))
+    assert want != strip(_expected(dc.build(p0_plan())))          # the edit moved things
+    assert strip(_asana_values(path)) == want
 
 
 # ---------------------------------------------------------------- workbook

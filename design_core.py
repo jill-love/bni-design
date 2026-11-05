@@ -69,11 +69,12 @@ MEASURED, SACRIFICIAL, SPARE = "MEASURED", "SACRIFICIAL", "SPARE"
 TASK_LAGS = {
     "prefill": -1,          # pre-fill pots: the working day before planting
     "kcl_setup": -1,        # KCl supplies and tubes: the working day before a harvest
-    "kcl_extract": 1,       # KCl extraction: the working day after a harvest
-    "kcl_analysis": 1,      # plate reader: working days after the extraction
+    "kcl_extract": 1,       # KCl batch 1: the working day after the LAST harvest; batch k: k
+    "kcl_analysis": 1,      # plate reader: working days after each batch's extraction
     "dry_weights": 3,       # oven-dried: 3 working days after a harvest
     "wash": 1,              # wash pots: the working day after the final harvest
 }
+KCL_BATCH_MAX = 72         # soil samples one KCl extraction can take
 GERMINATION_WORKDAYS = 5    # ZeaL germination check: the weekdays of the week after planting
 
 
@@ -658,6 +659,8 @@ class Design:
         kind, *a = anchor
         if kind == "water":
             return self.water_days_all()[a[0] - 1]
+        if kind == "last_harvest":
+            return max(d for d, _, _ in self.harvests())
         c = self.plan.cohort(a[1])
         p0 = self.planting(a[0], c.name)
         if kind == "plant":
@@ -667,6 +670,46 @@ class Design:
         if kind == "flood":
             return p0 + dt.timedelta(days=c.flood_dap)
         return p0 + dt.timedelta(days=c.first_n2o_dap + a[2])          # "n2o"
+
+    def harvests(self) -> list[tuple[dt.date, str, int]]:
+        """Every harvest with soil samples, in date order: (date, 'A sacrificial' /
+        'A final' (+ ', group g'), samples). Spares are not harvested."""
+        many = self.groups > 1
+        out = []
+        for g in range(1, self.groups + 1):
+            for c in self.plan.cohorts:
+                tag = f"{c.name}" + (f" G{g}" if many else "")
+                for role, kind, anchor in (
+                        (SACRIFICIAL, "sacrificial", ("flood", g, c.name)),
+                        (MEASURED, "final", ("n2o", g, c.name, c.last_offset))):
+                    n = sum(p.role == role and p.group == g and p.cohort == c.name
+                            for p in self.pots)
+                    if n:
+                        out.append((self.anchor_date(anchor), f"{tag} {kind}", n))
+        return sorted(out, key=lambda h: h[0])
+
+    def kcl_batches(self) -> list[list[tuple[str, int]]]:
+        """The soil samples split into the fewest KCl extractions of at most KCL_BATCH_MAX,
+        as equal as they divide (117 -> 59 + 58), filled in harvest order. Each batch is
+        [(harvest, samples)], a harvest split over two batches where the sizes need it."""
+        hv = [(name, n) for _, name, n in self.harvests()]
+        total = sum(n for _, n in hv)
+        if not total:
+            return []
+        b = -(-total // KCL_BATCH_MAX)
+        sizes = [total // b + (1 if i < total % b else 0) for i in range(b)]
+        out, queue = [], list(hv)
+        for size in sizes:
+            batch = []
+            while size:
+                name, n = queue.pop(0)
+                take = min(n, size)
+                batch.append((name, take))
+                size -= take
+                if n > take:
+                    queue.insert(0, (name, n - take))
+            out.append(batch)
+        return out
 
     def water_days_all(self) -> list[dt.date]:
         """Every day anything is watered, any group or cohort."""
@@ -737,13 +780,21 @@ class Design:
                 for anchor, what in harvests:
                     add(anchor, None, f"Plant harvest and soil sample collection - {w}",
                         "Harvest", what)
-                    add(anchor, lag["kcl_extract"], f"KCl extractions - {w}", "KCl", what)
-                    add(anchor, lag["kcl_extract"] + lag["kcl_analysis"],
-                        f"KCl analysis (plate reader) - {w}", "KCl", what)
                     add(anchor, lag["dry_weights"], f"Plant dry weights measure & record - {w}",
                         "Harvest", what)
                 add(last, lag["wash"], f"Wash pots for reuse - {w}", "Cleanup",
                     f"{meas + sac} pots")
+        # KCl: the soil samples wait until the last harvest, then go in a few equal batches
+        # on consecutive working days, each read on the plate reader the day after
+        batches = self.kcl_batches()
+        for k, parts in enumerate(batches, 1):
+            n = sum(x for _, x in parts)
+            of = f" (batch {k} of {len(batches)})" if len(batches) > 1 else ""
+            what = f"{n} samples: " + ", ".join(f"{name} {x}" for name, x in parts)
+            add(("last_harvest",), lag["kcl_extract"] + k - 1, f"KCl extractions{of}", "KCl",
+                what)
+            add(("last_harvest",), lag["kcl_extract"] + k - 1 + lag["kcl_analysis"],
+                f"KCl analysis (plate reader){of}", "KCl", what)
         # watering: one task per day, whatever is still being watered that day
         for k, day in enumerate(self.water_days_all(), 1):
             add(("water", k), None, "Maintenance watering", "Watering", self.water_who(day))
