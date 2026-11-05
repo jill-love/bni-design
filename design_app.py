@@ -38,7 +38,8 @@ def example_plan() -> dc.Plan:
         name="BNI-P1", seed=dt.date.today().toordinal() % 100000,
         planting_date=dt.date.today() + dt.timedelta(days=7), treatment_dap=14,
         cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24), dc.Cohort("C", 27)],
-        rows=[dc.PlanRow("B73", c, t, 10, 3) for c in "ABC" for t in ("CTRL", "SN", "INH")])
+        rows=[dc.PlanRow("B73", c, t, 10, 3) for c in "ABC" for t in ("CTRL", "SN", "INH")],
+        wfps_target=0.40)
 
 
 # ======================================================================================
@@ -177,6 +178,28 @@ class DesignWindow(QtWidgets.QMainWindow):
         sl.addRow(note)
         left.addWidget(sched)
 
+        dos = QtWidgets.QGroupBox("Dosing station (the workbook's admin tab)")
+        dl = QtWidgets.QFormLayout(dos)
+        # (attribute, label, x100 for a percent, tooltip); blank = fill in the workbook later
+        self.admin_fields = {}
+        for attr, label, pct, tip in (
+                ("wfps_target", "WFPS target (%)", True,
+                 "Wet-up and maintenance water level, % water-filled pore space (40 = 0.40)."),
+                ("wfps_flood", "Flood WFPS (%)", True,
+                 "Flood water level, % WFPS. Must be above the target. Blank: no flood target."),
+                ("bulk_density", "Bulk density (g/cm3)", False, ""),
+                ("particle_density", "Particle density (g/cm3)", False, "2.65 if unknown"),
+                ("air_dry_moisture", "Air-dry moisture (%)", True,
+                 "Water in the air-dry soil, % of its mass (4 = 0.04)."),
+                ("air_dry_soil_g", "Air-dry soil per pot (g)", False, ""),
+                ("container_weight_g", "Empty pot (g)", False, "")):
+            e = QtWidgets.QLineEdit(); e.setPlaceholderText("blank: fill in later")
+            e.setToolTip(tip or label)
+            e.textChanged.connect(self._stale)
+            dl.addRow(label, e)
+            self.admin_fields[attr] = (e, pct, label)
+        left.addWidget(dos)
+
         coh = QtWidgets.QGroupBox("Cohorts (time trial)"); cl = QtWidgets.QVBoxLayout(coh)
         self.cohorts = SheetTable(("Cohort", "First N2O (days after planting)"), numeric_cols=(1,))
         self.cohorts.setMinimumHeight(140)
@@ -273,6 +296,9 @@ class DesignWindow(QtWidgets.QMainWindow):
         self.cap.setValue(p.max_measured_per_day)
         self.min_gap.setValue(p.min_stagger_days)
         self.groups.setValue(p.planting_groups)
+        for attr, (e, pct, _) in self.admin_fields.items():
+            v = getattr(p, attr)
+            e.setText("" if v is None else f"{round(v * 100 if pct else v, 6):g}")
         self.cohorts.setRowCount(len(p.cohorts))
         for r, c in enumerate(p.cohorts):
             self.cohorts.set_text(r, 0, c.name); self.cohorts.set_text(r, 1, c.first_n2o_dap)
@@ -307,8 +333,18 @@ class DesignWindow(QtWidgets.QMainWindow):
             rows.append(dc.PlanRow(g, self.table.text(r, 1), self.table.text(r, 2),
                                    num(self.table, r, 3, "reps"),
                                    num(self.table, r, 4, "sacrificial")))
+        admin = {}
+        for attr, (e, pct, label) in self.admin_fields.items():
+            t = e.text().strip().replace(",", ".")
+            if not t:
+                admin[attr] = None if attr != "particle_density" else 2.65
+                continue
+            try:
+                admin[attr] = float(t) / 100 if pct else float(t)
+            except ValueError:
+                raise dc.PlanError(f"{label} is not a number: {t!r}")
         d = self.plant.date()
-        return dc.Plan(
+        return dc.Plan(**admin,
             name=self.name.text().strip(), seed=self.seed.value(),
             planting_date=dt.date(d.year(), d.month(), d.day()),
             treatment_dap=self.treat.value() if self.treat_on.isChecked() else None,
@@ -527,6 +563,12 @@ def summary_text(d: dc.Design) -> str:
     out.append("  " + "  ".join(f"T{t}:{per_t[t]}" for t in range(1, plan.tables + 1)))
     for w in d.warnings:
         out += ["", f"WARNING: {w}"]
+    missing = dc.admin_missing(plan)
+    pct = lambda v: "-" if v is None else f"{v * 100:g} %"
+    out += ["", "DOSING STATION (admin tab)",
+            f"  WFPS target {pct(plan.wfps_target)}, flood {pct(plan.wfps_flood)}",
+            ("  ready for Start New Trial" if not missing else
+             "  fill in before Start New Trial: " + ", ".join(missing))]
     return "\n".join(out)
 
 

@@ -26,7 +26,10 @@ Sheets
             Description): save as CSV and import into an Asana project. Every repeat is its
             own row. Due dates are formulas on the timeline, so they follow its edits.
   jars      barcode + tag (tag ends with the Tn-Zn-nn position): the sheet the dosing
-            station's provisioning reads (add its `admin` sheet before provisioning).
+            station's provisioning reads.
+  admin     the dosing station's WFPS inputs (key in column A, value in B, note in C):
+            with jars, the workbook is ready for the station's Start New Trial. Plain
+            values only (the station refuses formulas); blank yellow cells still to fill.
   info      the plan as entered, seed and version, so the design can be rebuilt exactly.
 """
 from __future__ import annotations
@@ -610,6 +613,41 @@ def _jars(wb, d: dc.Design) -> None:
     ws.freeze_panes = "A2"
 
 
+def _admin(wb, d: dc.Design) -> None:
+    """The dosing station's `admin` tab, in the station template's order. Values, never
+    formulas: provisioning refuses a formula it cannot see the result of."""
+    plan = d.plan
+    ws = wb.create_sheet("admin")
+    pct = lambda v: f"= {v * 100:g} %" if v is not None else ""
+    rows = [
+        ("trial_id", plan.name, "experiment id (the barcodes' prefix)", False),
+        ("soil_label", None, "optional", False),
+        ("operator", None, "optional", False),
+        ("date", plan.planting_date.isoformat(), "planting date, group 1", False),
+        ("profile", "wet_up", "first watering: wet-up from air-dry soil", False),
+        ("bulk_density", plan.bulk_density, "g/cm3", True),
+        ("air_dry_moisture", plan.air_dry_moisture,
+         f"fraction of air-dry soil mass {pct(plan.air_dry_moisture)}", True),
+        ("particle_density", plan.particle_density, "g/cm3 (2.65 if unknown)", False),
+        ("wfps_target", plan.wfps_target,
+         f"fraction: wet-up and maintenance target {pct(plan.wfps_target)}", True),
+        ("wfps_flood", plan.wfps_flood,
+         f"fraction: flood target {pct(plan.wfps_flood)} (blank: no flood target)", True),
+        ("container_weight_g", plan.container_weight_g, "empty pot, g", True),
+        ("air_dry_soil_g", plan.air_dry_soil_g, "air-dry soil per pot, g", True),
+    ]
+    for r, (key, val, note, yellow) in enumerate(rows, 1):
+        ws.cell(row=r, column=1, value=key).font = BOLD
+        c = ws.cell(row=r, column=2, value=val)
+        if yellow:
+            _input(c)
+        missing = val is None and key in dc.ADMIN_REQUIRED
+        n = ws.cell(row=r, column=3, value=("REQUIRED: fill in before Start New Trial. "
+                                            if missing else "") + note)
+        n.font = Font(bold=True, color="B91C1C") if missing else NOTE
+    _widths(ws, (22, 16, 60))
+
+
 def _info(wb, d: dc.Design) -> None:
     plan = d.plan
     ws = wb.create_sheet("info")
@@ -657,5 +695,6 @@ def write(d: dc.Design, path: str) -> None:
     _groups(wb, d, refs)
     _asana(wb, d, refs)
     _jars(wb, d)
+    _admin(wb, d)
     _info(wb, d)
     wb.save(path)
