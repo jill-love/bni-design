@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-design_core.py: BNI experiment design (v0.3, 2026-11-03). No Qt, no Excel.
+design_core.py: BNI experiment design (v0.4, 2026-11-04). No Qt, no Excel.
 
 From a plan (genotypes x cohorts x treatments x reps, the bench, the N2O capacity) it
 builds one row per pot, then:
@@ -20,6 +20,10 @@ builds one row per pot, then:
      table, keeping every cell, and every planting group, as evenly spread as it
      divides; slots within a zone are random (empty slots too). Position text is
      Tn-Zn-nn, the form the dosing station reads from a pot's tag.
+     Inside a group, cohorts whose days would collide (one's flood on another's N2O
+     day) are not refused or respaced: the later one is PLANTED LATER (cohort_offsets),
+     so every cohort keeps its days after planting and nothing is planted before the
+     planting date.
   3. SCHEDULE. Per group and cohort: plant (DAP 0), treatment (treatment_dap), flood and
      sacrificial harvest (first N2O DAP - 1), N2O at each measure offset (24 h, 48 h),
      harvest after the last one. Daily N2O load is counted per calendar day. Watering is
@@ -46,7 +50,7 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 
-__version__ = "0.3"
+__version__ = "0.4"
 
 MAX_ZONES = 8              # a table holds at most 8 zones x 25 slots
 MAX_SLOTS = 25
@@ -317,7 +321,30 @@ def _deal(pots: list[Pot], bins: list, rng: random.Random, key_extra=None,
 # ======================================================================================
 # 1. PLANTING GROUPS
 # ======================================================================================
-def daily_load(plan: Plan, pots: list[Pot], stagger_days: int) -> Counter:
+def cohort_offsets(plan: Plan) -> dict[str, int]:
+    """{cohort: days its planting follows the group's planting date}. Cohorts whose days
+    would collide (one's flood on another's N2O day) are planted LATER, never earlier and
+    never by changing their days after planting: the cohort with the earliest first N2O
+    day keeps the planting date, each next one takes the smallest delay (0 if none is
+    needed) that keeps its flood off the others' N2O days and theirs off its own."""
+    flood, n2o, out = set(), set(), {}
+    order = sorted(range(len(plan.cohorts)), key=lambda i: (plan.cohorts[i].first_n2o_dap, i))
+    for i in order:
+        c = plan.cohorts[i]
+        off = 0
+        while True:
+            f = off + c.first_n2o_dap - 1
+            m = {off + c.first_n2o_dap + o for o in plan.measure_offsets}
+            if f not in n2o and not (m & flood):
+                break
+            off += 1
+        out[c.name] = off
+        flood.add(f); n2o.update(m)
+    return out
+
+
+def daily_load(plan: Plan, pots: list[Pot], stagger_days: int,
+               offsets: dict[str, int]) -> Counter:
     """{days after group 1's planting: N2O measurements that day}."""
     load = Counter()
     for p in pots:
@@ -325,35 +352,32 @@ def daily_load(plan: Plan, pots: list[Pot], stagger_days: int) -> Counter:
             continue
         c = plan.cohort(p.cohort)
         for off in plan.measure_offsets:
-            load[(p.group - 1) * stagger_days + c.first_n2o_dap + off] += 1
+            load[(p.group - 1) * stagger_days + offsets[c.name] + c.first_n2o_dap + off] += 1
     return load
 
 
-def clash_days(plan: Plan, groups: int, stagger_days: int) -> list[int]:
+def clash_days(plan: Plan, groups: int, stagger_days: int,
+               offsets: dict[str, int]) -> list[int]:
     """Days (after group 1's planting) with a flood AND an N2O measurement: they cannot
     be run together."""
     flood, n2o = set(), set()
     for g in range(groups):
         for c in plan.cohorts:
-            base = g * stagger_days + c.first_n2o_dap
+            base = g * stagger_days + offsets[c.name] + c.first_n2o_dap
             flood.add(base - 1)
             n2o.update(base + off for off in plan.measure_offsets)
     return sorted(flood & n2o)
 
 
-def choose_groups(plan: Plan, pots: list[Pot], rng: random.Random
+def choose_groups(plan: Plan, pots: list[Pot], rng: random.Random, offsets: dict[str, int]
                   ) -> tuple[int, int, Counter, list[str]]:
     """Split the pots into the fewest balanced planting groups, planted `stagger` days
     apart, that keep every day's N2O load within capacity and never put a flood on an
-    N2O day. Sets pot.group. Returns (groups, stagger_days, load, warnings)."""
+    N2O day. Inside a group the cohorts are planted `offsets` days after the group
+    (cohort_offsets), so they never collide with each other. Sets pot.group. Returns
+    (groups, stagger_days, load, warnings)."""
     warnings = []
-    inherent = clash_days(plan, 1, 0)                  # the cohorts alone already clash
-    if inherent:
-        warnings.append(
-            f"cohorts' days collide inside one planting group: a flood falls on an N2O day "
-            f"(DAP {', '.join(map(str, inherent))}). Space the cohorts' first N2O days at "
-            f"least {len(plan.measure_hours) + 1} days apart.")
-    ok_clash = lambda k, s: inherent or not clash_days(plan, k, s)
+    ok_clash = lambda k, s: not clash_days(plan, k, s, offsets)
     n_measured = sum(p.role == MEASURED for p in pots)
     fixed = plan.planting_groups if plan.planting_groups > 0 else None
     tries = [fixed] if fixed else range(1, max(1, n_measured) + 1)
@@ -364,19 +388,19 @@ def choose_groups(plan: Plan, pots: list[Pot], rng: random.Random
         for p in pots:
             p.group = assign[id(p)]
         for s in range(plan.min_stagger_days, MAX_STAGGER_DAYS + 1):
-            load = daily_load(plan, pots, s)
+            load = daily_load(plan, pots, s, offsets)
             if max(load.values(), default=0) <= plan.max_measured_per_day and ok_clash(k, s):
                 return k, s, load, warnings
             if k == 1:
                 break                                  # one group: the gap changes nothing
     if fixed:
         s = plan.min_stagger_days
-        load = daily_load(plan, pots, s)               # reported, not hidden
+        load = daily_load(plan, pots, s, offsets)      # reported, not hidden
         if max(load.values(), default=0) > plan.max_measured_per_day:
             warnings.append(f"{max(load.values())} N2O measurements fall on one day "
                             f"(capacity {plan.max_measured_per_day}) with {fixed} planting "
                             f"group(s) fixed: use Auto or more groups")
-        if not inherent and clash_days(plan, fixed, s):
+        if clash_days(plan, fixed, s, offsets):
             warnings.append(f"with {fixed} planting group(s) {s} days apart a flood falls on "
                             f"an N2O day: use Auto or a longer gap")
         return fixed, s, load, warnings
@@ -492,7 +516,7 @@ def workday(day: dt.date, n: int) -> dt.date:
 class Task:
     """A dated piece of work. The date is `lag` working days from `anchor` (lag None: the
     anchor day itself, weekend or not), so the workbook can write it as a formula on the
-    timeline. Anchors: ("plant", g), ("treat", g), ("flood", g, cohort),
+    timeline. Anchors: ("plant", g, cohort), ("treat", g, cohort), ("flood", g, cohort),
     ("n2o", g, cohort, offset), ("water", n) = the n-th watering day of the experiment."""
     date: dt.date
     name: str
@@ -513,13 +537,30 @@ class Design:
     stagger_days: int
     load: Counter                  # {DAP of group 1: N2O measurements}
     warnings: list[str] = field(default_factory=list)
+    offsets: dict[str, int] = field(default_factory=dict)   # cohort -> planting delay, days
 
     def group_planting(self, g: int) -> dt.date:
+        """Group g's planting date: its first cohort (and its spares) are planted then."""
         return self.plan.planting_date + dt.timedelta(days=(g - 1) * self.stagger_days)
+
+    def planting(self, g: int, cohort: str) -> dt.date:
+        """When group g's pots of `cohort` are planted (the group date + the cohort's
+        offset). Spares (no cohort) are planted on the group date."""
+        return self.group_planting(g) + dt.timedelta(days=self.offsets.get(cohort, 0))
+
+    def planting_days(self, g: int) -> list[tuple[dt.date, list[str]]]:
+        """Group g's planting days in order, with the cohorts planted on each."""
+        days = defaultdict(list)
+        for c in self.plan.cohorts:
+            days[self.planting(g, c.name)].append(c.name)
+        return sorted(days.items())
+
+    def pot_planting(self, p: Pot) -> dt.date:
+        return self.planting(p.group, p.cohort)
 
     def events(self, g: int, cohort: Cohort) -> list[tuple[dt.date, str]]:
         """What happens to group g, cohort `cohort`, in date order."""
-        p0 = self.group_planting(g)
+        p0 = self.planting(g, cohort.name)
         day = lambda dap: p0 + dt.timedelta(days=dap)
         has_sac = any(p.role == SACRIFICIAL and p.group == g and p.cohort == cohort.name
                       for p in self.pots)
@@ -536,7 +577,7 @@ class Design:
         return ev
 
     def water(self, g: int, cohort: Cohort) -> list[dt.date]:
-        p0 = self.group_planting(g)
+        p0 = self.planting(g, cohort.name)
         return water_days(p0, p0 + dt.timedelta(days=cohort.first_n2o_dap - 1))
 
     def day_text(self, g: int, cohort: Cohort, day: dt.date) -> str:
@@ -552,12 +593,12 @@ class Design:
         kind, *a = anchor
         if kind == "water":
             return self.water_days_all()[a[0] - 1]
-        p0 = self.group_planting(a[0])
+        c = self.plan.cohort(a[1])
+        p0 = self.planting(a[0], c.name)
         if kind == "plant":
             return p0
         if kind == "treat":
             return p0 + dt.timedelta(days=self.plan.treatment_dap)
-        c = self.plan.cohort(a[1])
         if kind == "flood":
             return p0 + dt.timedelta(days=c.first_n2o_dap - 1)
         return p0 + dt.timedelta(days=c.first_n2o_dap + a[2])          # "n2o"
@@ -587,20 +628,28 @@ class Design:
             out.append(Task(day, name, section, notes, anchor, n))
 
         for g in range(1, self.groups + 1):
-            sfx = f" (group {g})" if many else ""
-            n = sum(p.group == g for p in self.pots)
-            add(("plant", g), lag["prefill"], f"Pre-fill pots with weighed soil{sfx}", "Setup",
-                f"{n} pots")
-            add(("plant", g), None, f"Label, plant seed, and initial wet-up of pots{sfx}",
-                "Planting", f"{n} pots")
-            add(("plant", g), None, f"Label tables with treatment and group information per pot"
-                f"{sfx}", "Planting", "positions and tags: design map, tags sheet")
-            # the 7 days after planting always hold 5 weekdays: working days 1 to 5
-            for k in range(1, GERMINATION_WORKDAYS + 1):
-                add(("plant", g), k, f"If using ZeaL genotypes, check for germination{sfx}",
-                    "Planting", f"check {k} of {GERMINATION_WORKDAYS}")
-            if plan.treatment_dap is not None:
-                add(("treat", g), None, f"Apply treatments{sfx}", "Treatment")
+            days = self.planting_days(g)
+            for day, cs in days:
+                # one set of planting tasks per planting day: the cohorts are planted
+                # apart when their days would collide (cohort_offsets)
+                tag = ([f"group {g}"] if many else []) \
+                    + ([f"cohort{'s' if len(cs) > 1 else ''} {', '.join(cs)}"] if len(days) > 1 else [])
+                sfx = f" ({', '.join(tag)})" if tag else ""
+                n = sum(p.group == g and (p.cohort in cs or (p.role == SPARE and day == days[0][0]))
+                        for p in self.pots)
+                at = ("plant", g, cs[0])
+                add(at, lag["prefill"], f"Pre-fill pots with weighed soil{sfx}", "Setup",
+                    f"{n} pots")
+                add(at, None, f"Label, plant seed, and initial wet-up of pots{sfx}",
+                    "Planting", f"{n} pots")
+                add(at, None, f"Label tables with treatment and group information per pot"
+                    f"{sfx}", "Planting", "positions and tags: design map, tags sheet")
+                # the 7 days after planting always hold 5 weekdays: working days 1 to 5
+                for k in range(1, GERMINATION_WORKDAYS + 1):
+                    add(at, k, f"If using ZeaL genotypes, check for germination{sfx}",
+                        "Planting", f"check {k} of {GERMINATION_WORKDAYS}")
+                if plan.treatment_dap is not None:
+                    add(("treat", g, cs[0]), None, f"Apply treatments{sfx}", "Treatment")
             for c in plan.cohorts:
                 w = who(g, c.name)
                 sac = sum(p.role == SACRIFICIAL and p.group == g and p.cohort == c.name
@@ -656,7 +705,8 @@ def build(plan: Plan) -> Design:
         raise PlanError("; ".join(problems))
     rng = random.Random(plan.seed)
     pots = make_pots(plan)
-    groups, stagger, load, warnings = choose_groups(plan, pots, rng)
+    offsets = cohort_offsets(plan)
+    groups, stagger, load, warnings = choose_groups(plan, pots, rng, offsets)
     add_spares(plan, pots, groups)
     if len(pots) > plan.capacity:
         n_sp = len(pots) - count_pots(plan)
@@ -673,4 +723,4 @@ def build(plan: Plan) -> Design:
     for p, n in zip(pots, numbers):
         p.barcode = f"{plan.name.strip()}-S{n:0{width}d}"
     pots.sort(key=lambda p: (p.table, p.zone, p.slot))
-    return Design(plan, pots, groups, stagger, load, warnings)
+    return Design(plan, pots, groups, stagger, load, warnings, offsets)
