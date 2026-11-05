@@ -33,6 +33,7 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | If using ZeaL genotypes, check for germination | every weekday of the 7 days after planting |
    | Run swaps: replace failed pots with spares, discard unused spares | a week (5 working days) after each planting day |
    | Maintenance watering | each watering day (one task per day, for every group and cohort still being watered) |
+   | Make the treatment solutions | once, the working day before the first treatment (only when the plan has treatments); lists each treatment and its pots |
    | Apply treatments | treatment day |
    | KCl soil collection setup (gathering supplies, printing & labeling tubes) | once, for every soil sample of the experiment, with the setup: the working day before the first planting |
    | Flood | flood day |

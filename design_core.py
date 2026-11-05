@@ -77,6 +77,7 @@ TASK_LAGS = {
     "kcl_setup": -1,        # every KCl tube, one session: the working day before the
                             # experiment's first planting, with the other setup
     "swaps": 5,             # run the swap tool: a week (5 working days) after each planting
+    "make_treatments": -1,  # make the treatments: the working day before the first treatment
     "kcl_extract": 1,       # KCl batch 1: the working day after the LAST harvest; batch k: k
     "kcl_ship": 1,          # prep the extracts for shipping: the working day after the last batch
     "dry_weights": 3,       # oven-dried: 3 working days after a harvest
@@ -91,6 +92,7 @@ TASK_KINDS = {
     "germination": "Check ZeaL germination",
     "swaps": "Run swaps (failed pots, unused spares)",
     "watering": "Maintenance watering",
+    "make_treatments": "Make the treatment solutions",
     "treatment": "Apply treatments",
     "flood": "Flood",
     "n2o": "N2O measurements",
@@ -856,6 +858,19 @@ class Design:
                         "Harvest", what, "dry_weights")
                 add(last, lag["wash"], f"Wash pots for reuse - {w}", "Cleanup",
                     f"{meas + sac} pots", "wash")
+        # the treatments are made once, the working day before the first one is applied
+        trts = []
+        for r in plan.rows:
+            t = r.treatment.strip()
+            if r.genotype.strip() and t and t not in trts:
+                trts.append(t)
+        if plan.treatment_dap is not None and trts:
+            n = Counter(p.treatment for p in self.pots
+                        if p.role in (MEASURED, SACRIFICIAL) and p.treatment)
+            add(("treat", 1, self.planting_days(1)[0][1][0]), lag["make_treatments"],
+                "Make the treatment solutions", "Treatment",
+                "for " + ", ".join(f"{t} ({n[t]} pots)" for t in trts)
+                + f"; first applied day {plan.treatment_dap} after planting", "make_treatments")
         # KCl tubes for every soil sample, prepared in one session with the other setup
         hv = self.harvests()
         if hv:
