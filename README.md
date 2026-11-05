@@ -31,9 +31,10 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Label, plant seed, and initial wet-up of pots | planting day |
    | Label tables with treatment and group information per pot | planting day |
    | If using ZeaL genotypes, check for germination | every weekday of the 7 days after planting |
+   | Run swaps: replace failed pots with spares, discard unused spares | a week (5 working days) after each planting day |
    | Maintenance watering | each watering day (one task per day, for every group and cohort still being watered) |
    | Apply treatments | treatment day |
-   | KCl soil collection setup (gathering supplies, printing & labeling tubes) | the working day before a cohort's first harvest |
+   | KCl soil collection setup (gathering supplies, printing & labeling tubes) | once, for every soil sample of the experiment, with the setup: the working day before the first planting |
    | Flood | flood day |
    | N2O measurements | each of the cohort's N2O days |
    | Plant harvest and soil sample collection | flood day (sacrificial pots) and after the last N2O (final) |
@@ -79,7 +80,7 @@ When a pot fails, a spare of the **same genotype and planting group** takes over
 1. Close the design map in Excel.
 2. Run `run_swaps.bat` (or `python swap_app.py`) and open the design map.
 3. Scan or type the failed pot; pick or scan the spare (only spares of its genotype planted the same day are offered, and any other is refused); **Add swap**. Repeat. A swap added by mistake can be removed until you save.
-4. Optional: tick **Discard every spare left unused** once all swaps are in.
+4. Optional: tick **Discard unused spares planted at least a week before the date above** once all swaps are in. Spares of a later planting day are kept until their own week is up.
 5. **Save design map.** The workbook is rebuilt from its own layout (never re-randomised): every tab follows the swaps, failed pots and discarded spares are struck through on the layout and leave `jars`, the spare is bold with "(for Snnn)". Values typed into the flood, measure and harvest sheets (by barcode), edited yellow timeline inputs, admin values and tabs added by hand are kept. The old file is kept as `<name>_before_swaps_<date>.xlsx`.
 6. On the greenhouse PC, in the dosing station: pick the trial again in the **Trial** dropdown (it reloads the workbook: the failed and discarded pots are retired, the spares carry their new role), then **Load experiment orders** again. Do this between sessions, not in the middle of a flood.
 

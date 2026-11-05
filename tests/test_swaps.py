@@ -314,3 +314,14 @@ def test_window_lists_only_spares_planted_that_day(tmp_path):
     w.spare.setEditText(early.barcode); w._add()                     # scanned anyway
     assert w.pending == [] and "own age" in w.banner.text()
     w.close()
+
+
+def test_discard_keeps_spares_of_a_later_planting_day(tmp_path):
+    d, _ = _late_map(tmp_path)                       # A planted day 0, B day 2 (with spares)
+    first = min(S.planted(d, p) for p in d.pots)
+    gone = S.discard_spares(d, first + dt.timedelta(days=8))       # A's spares 8 days old
+    kept = [p for p in d.pots if p.role == dc.SPARE]
+    assert gone and all(S.planted(d, d_p) == first for d_p in d.pots if d_p.barcode in gone)
+    assert kept and all(p.planted_with == "B" for p in kept)         # B's: 6 days old
+    assert S.discard_spares(d, first + dt.timedelta(days=9))        # a day later they go
+    assert not [p for p in d.pots if p.role == dc.SPARE]

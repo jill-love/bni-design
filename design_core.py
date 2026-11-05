@@ -74,7 +74,9 @@ GONE = (FAILED, DISCARDED)
 # (Excel's WORKDAY, so the workbook recalculates them). Negative = before.
 TASK_LAGS = {
     "prefill": -1,          # pre-fill pots: the working day before planting
-    "kcl_setup": -1,        # KCl supplies and tubes: the working day before a harvest
+    "kcl_setup": -1,        # every KCl tube, one session: the working day before the
+                            # experiment's first planting, with the other setup
+    "swaps": 5,             # run the swap tool: a week (5 working days) after each planting
     "kcl_extract": 1,       # KCl batch 1: the working day after the LAST harvest; batch k: k
     "kcl_analysis": 1,      # plate reader: working days after each batch's extraction
     "dry_weights": 3,       # oven-dried: 3 working days after a harvest
@@ -803,6 +805,12 @@ class Design:
                 for k in range(1, GERMINATION_WORKDAYS + 1):
                     add(at, k, f"If using ZeaL genotypes, check for germination{sfx}",
                         "Planting", f"check {k} of {GERMINATION_WORKDAYS}")
+                nsp = sum(p.group == g and p.role == SPARE and self.pot_planting(p) == day
+                          for p in self.pots)
+                add(at, lag["swaps"], f"Run swaps: replace failed pots with spares, discard "
+                    f"unused spares{sfx}", "Planting",
+                    f"swap tool (run_swaps.bat) on the design map, then reload the trial in "
+                    f"the dosing station; {nsp} spare(s) planted that day")
                 if plan.treatment_dap is not None:
                     add(("treat", g, cs[0]), None, f"Apply treatments{sfx}", "Treatment")
             for c in plan.cohorts:
@@ -814,10 +822,6 @@ class Design:
                 last = ("n2o", g, c.name, c.last_offset)
                 harvests = [(("flood", g, c.name), f"sacrificial harvest, {sac} pots")] if sac else []
                 harvests.append((last, f"final harvest, {meas} pots"))
-                add(harvests[0][0], lag["kcl_setup"],
-                    f"KCl soil collection setup (gathering supplies, printing & labeling tubes)"
-                    f" - {w}", "KCl", f"{sac + meas} tubes"
-                    + (" (sacrificial and final harvests)" if sac else ""))
                 add(("flood", g, c.name), None, f"Flood - {w}", "N2O",
                     (f"harvest the {sac} sacrificial pots first; " if sac else "")
                     + f"flood {meas} pots in the flood sheet's order")
@@ -831,6 +835,17 @@ class Design:
                         "Harvest", what)
                 add(last, lag["wash"], f"Wash pots for reuse - {w}", "Cleanup",
                     f"{meas + sac} pots")
+        # KCl tubes for every soil sample, prepared in one session with the other setup
+        hv = self.harvests()
+        if hv:
+            first = self.planting_days(1)[0][1][0]
+            per = Counter()
+            for _, name, n in hv:
+                per[name.split(" ")[0]] += n
+            add(("plant", 1, first), lag["kcl_setup"],
+                "KCl soil collection setup (gathering supplies, printing & labeling tubes)",
+                "Setup", f"{sum(per.values())} tubes, every harvest of the experiment: "
+                + ", ".join(f"{k} {v}" for k, v in per.items()))
         # KCl: the soil samples wait until the last harvest, then go in a few equal batches
         # on consecutive working days, each read on the plate reader the day after
         batches = self.kcl_batches()
