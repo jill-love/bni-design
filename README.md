@@ -4,7 +4,7 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
 
 ## What it does
 
-1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity. **Spares are per genotype per planting group**: a spare can only replace a pot planted the same day. They are added once the groups are known, and never change the number of groups. Spare tags carry their group, for example `B73-G2-SPARE-01`. The **Dosing station** box takes the WFPS target and flood WFPS (in %), the soil's bulk and particle density and air-dry moisture, the air-dry soil per pot and the empty pot weight; any of them may be left blank and filled in the workbook later.
+1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity. **Spares are per genotype per planting day**: a spare can only replace a pot of its genotype planted the same day, so a group whose cohort is planted later (below) gets spares on each of its planting days. They are added once the groups are known, and never change the number of groups. Spare tags carry their group, and their planting day's cohorts when a group plants on more than one day: `B73-G2-SPARE-01`, `B73-G1-B-SPARE-01` (planted with cohort B). The **Dosing station** box takes the WFPS target and flood WFPS (in %), the soil's bulk and particle density and air-dry moisture, the air-dry soil per pot and the empty pot weight; any of them may be left blank and filled in the workbook later.
 2. **Planting groups**: N2O is measured one pot at a time, at most *max N2O measurements / day* (50 by default). Planting is staggered so that no day needs more than that, and **a flood never falls on an N2O day**. The pots are split into the **fewest equally sized groups** that fit, planted at least 3 days apart by default (one group's 24 h and 48 h N2O days, then the next group's flood), or further apart if needed. The split is random but balanced: every genotype x cohort x treatment cell is spread over the groups as evenly as it divides.
    **N2O times are set per cohort**, in the cohort table: whole days after the flood, e.g. `24, 48, 72` for one cohort and `24, 48` for another (blank: 24, 48). The first N2O day stays the cohort's first sample; the flood is that many hours before it, and harvest follows the last sample. They are fixed when the workbook is made (shown in each calendar column's header); change them in the window and generate again.
    **Cohorts that would collide are planted later, not respaced.** If one cohort's flood would fall on another's N2O day, the program keeps every cohort's days after planting exactly as entered and plants the later cohort a few days later instead (never earlier than the planting date). The cohort with the earliest first N2O day is planted on the planting date; each next one gets the smallest delay that clears the collision, 0 if none is needed. The delay is the yellow *Planted (days after group)* column on the timeline, and the planting tasks are listed per planting day.
@@ -61,14 +61,27 @@ The same random seed always gives the same design.
 | `asana_tasks` | One row per task: Name, Due Date, Section/Column, Description, and nothing else. **File > Save As > CSV**, then in Asana: project > Import > CSV. Due dates follow the timeline's inputs. Watering has a few spare rows at the bottom, used when an edit adds watering days; a watering row whose day an edit removes goes blank. Delete blank rows (filter on Name) before saving the CSV. |
 | `jars` | `barcode` + `tag` (the tag ends with the position). The pots for the dosing station. |
 | `admin` | The dosing station's WFPS inputs, as fractions (`wfps_target` 0.40 for 40 %), plus `trial_id`, the planting date and `profile` = `wet_up`. Values only, no formulas. With `jars`, the workbook is a complete trial: **Start New Trial...** on the station takes it as is. Any input left blank in the window is an empty yellow cell marked REQUIRED; fill it in before provisioning. |
-| `info` | The plan as entered, the seed and the version. |
+| `swaps` | Written by the swap tool: date, failed pot, the spare that replaced it, the role it took over, note. |
+| `info` | The plan as entered, the seed and the version. A hidden `plan` tab holds the same as JSON, for the swap tool. |
 
 ## Run it
 
 - **Windows:** double-click `run_design.bat`.
 - **Anywhere:** `python design_app.py`.
+- **Swaps:** `run_swaps.bat`, or `python swap_app.py` (see below).
 
 The plan can be saved and reopened (**Save plan / Open plan**, a `.json` file).
+
+## Swaps: a spare replaces a failed pot
+
+When a pot fails, a spare of the **same genotype and planting group** takes over its role: cohort, treatment, rep, and its turn in the flood, N2O and harvest order. Neither pot moves and no barcode changes; write "promoted to <tag>" on the spare by hand.
+
+1. Close the design map in Excel.
+2. Run `run_swaps.bat` (or `python swap_app.py`) and open the design map.
+3. Scan or type the failed pot; pick or scan the spare (only spares of its genotype planted the same day are offered, and any other is refused); **Add swap**. Repeat. A swap added by mistake can be removed until you save.
+4. Optional: tick **Discard every spare left unused** once all swaps are in.
+5. **Save design map.** The workbook is rebuilt from its own layout (never re-randomised): every tab follows the swaps, failed pots and discarded spares are struck through on the layout and leave `jars`, the spare is bold with "(for Snnn)". Values typed into the flood, measure and harvest sheets (by barcode), edited yellow timeline inputs, admin values and tabs added by hand are kept. The old file is kept as `<name>_before_swaps_<date>.xlsx`.
+6. On the greenhouse PC, in the dosing station: pick the trial again in the **Trial** dropdown (it reloads the workbook: the failed and discarded pots are retired, the spares carry their new role), then **Load experiment orders** again. Do this between sessions, not in the middle of a flood.
 
 ## Test it
 
@@ -80,5 +93,4 @@ python -m pytest -q tests
 ## Not in v0.1 yet
 
 - Moisture levels by table pair (P0: tables 1-2 dry, 3-4 middle, 5-6 wet).
-- A swaps sheet.
 - An opening blank in the N2O load order.

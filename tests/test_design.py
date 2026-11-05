@@ -188,7 +188,7 @@ def test_planting_tasks_per_planting_day():
     assert [(x.date, x.name) for x in plant] == [
         (MON, "Label, plant seed, and initial wet-up of pots (cohorts A, C)"),
         (MON + dt.timedelta(days=2), "Label, plant seed, and initial wet-up of pots (cohort B)")]
-    assert [x.notes for x in plant] == ["12 pots", "5 pots"]   # spares go with the first day
+    assert [x.notes for x in plant] == ["12 pots", "7 pots"]   # each day has its own spares
     assert len(_named(d.tasks(), "If using ZeaL")) == 10
 
 
@@ -547,7 +547,9 @@ def test_workbook_sheets_and_jars(tmp_path):
            for k in ("flood", "measure", "harvest")]
     assert wb.sheetnames == ["timeline", "design", "layout"] + per + ["tags", "groups",
                                                                        "asana_tasks", "jars",
-                                                                       "admin", "info"]
+                                                                       "admin", "info",
+                                                                       "plan"]
+    assert wb["plan"].sheet_state == "hidden"
     jars = wb["jars"]
     assert [c.value for c in jars[1]] == ["barcode", "tag"]
     rows = list(jars.iter_rows(min_row=2, values_only=True))

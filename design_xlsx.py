@@ -205,7 +205,7 @@ def _timeline(wb, d: dc.Design) -> Refs:
         ws.cell(row=r, column=5, value=g).font = BOLD
         c = ws.cell(row=r, column=6, value=f"={P1}+({g}-1)*{GAP}")
         c.number_format = "DD MMM YYYY"; _input(c)
-        ws.cell(row=r, column=7, value=sum(p.group == g for p in d.pots)).border = BOX
+        ws.cell(row=r, column=7, value=sum(p.group == g and p.active for p in d.pots)).border = BOX
         ws.cell(row=r, column=8, value=sum(p.group == g and p.role == dc.MEASURED
                                            for p in d.pots)).border = BOX
     ws.cell(row=top + d.groups + 1, column=5,
@@ -336,22 +336,31 @@ def _timeline(wb, d: dc.Design) -> Refs:
 # ======================================================================================
 # DESIGN, LAYOUT
 # ======================================================================================
+def _planted(refs: Refs, p: dc.Pot) -> str:
+    """The pot's planting date as a formula: its cohort's, or for a spare the day of the
+    cohorts it was planted with (the group's date when that is empty)."""
+    if p.role in (dc.SPARE, dc.DISCARDED) and p.planted_with:
+        return refs.planting(p.group, p.planted_with.split("+")[0])
+    return refs.planting(p.group, p.cohort)
+
+
 def _design(wb, d: dc.Design, refs: Refs) -> None:
     ws = wb.create_sheet("design")
     cols = ["barcode", "role", "genotype", "cohort", "treatment", "rep", "planting_group",
             "planting_date", "table", "zone", "slot", "position", "n2o_load", "n2o_column",
-            "seq", "tag"]
+            "seq", "tag", "role_before", "swapped_with", "planted_with"]
     _header(ws, 1, cols)
     for r, p in enumerate(d.pots, 2):
         meas = p.role == dc.MEASURED
         vals = [p.barcode, p.role, p.genotype, p.cohort or None, p.treatment or None, p.rep,
-                p.group, f"={refs.planting(p.group, p.cohort)}", p.table, p.zone, p.slot, p.position,
-                p.load if meas else None, p.column if meas else None, p.seq or None, p.label]
+                p.group, f"={_planted(refs, p)}", p.table, p.zone, p.slot, p.position,
+                p.load if meas else None, p.column if meas else None, p.seq or None, p.label,
+                p.was or None, p.swap or None, p.planted_with or None]
         for c, v in enumerate(vals, 1):
             ws.cell(row=r, column=c, value=v)
         ws.cell(row=r, column=1).number_format = "@"
         ws.cell(row=r, column=8).number_format = "DD MMM YYYY"
-    _widths(ws, (16, 13, 12, 8, 11, 6, 9, 13, 6, 6, 6, 11, 9, 10, 6, 24))
+    _widths(ws, (16, 13, 12, 8, 11, 6, 9, 13, 6, 6, 6, 11, 9, 10, 6, 24, 12, 16, 12))
     ws.freeze_panes = "B2"
     ws.auto_filter.ref = f"A1:{L(len(cols))}{len(d.pots) + 1}"
 
@@ -424,8 +433,16 @@ def _layout(wb, d: dc.Design) -> None:
         sw = ws.cell(row=r, column=1, value="SPARE")
         sw.fill = _fill(SPARE_BG); sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
         ws.cell(row=r, column=2, value=(
-            "grey: spare, no cohort or treatment yet; replaces a failed pot of its own "
-            "planting group"))
+            "grey: spare, no cohort or treatment yet; replaces a failed pot of its genotype "
+            "planted the same day"))
+        r += 1
+    if any(not p.active for p in d.pots) or any(p.swap for p in d.pots):
+        sw = ws.cell(row=r, column=1, value="FAILED")
+        sw.font = Font(color="9CA3AF", strike=True, bold=True); sw.alignment = CENTER
+        sw.border = BOX
+        ws.cell(row=r, column=2, value=(
+            "struck through: failed pot or discarded spare, no longer grown (swaps tab). A "
+            "spare that replaced a failed pot is bold, in its new colour, '(for Snnn)'."))
         r += 1
     ws.cell(row=r, column=1, value="SAC").font = Font(bold=True, italic=True)
     ws.cell(row=r, column=1).alignment = CENTER
@@ -438,7 +455,7 @@ def _layout(wb, d: dc.Design) -> None:
 
     at = {(p.table, p.zone, p.slot): p for p in d.pots}
     for t in range(1, plan.tables + 1):
-        n = sum(p.table == t for p in d.pots)
+        n = sum(p.table == t and p.active for p in d.pots)
         _header(ws, r, [f"Table {t} ({n} pots)"]
                 + [f"slot {s}" for s in range(1, plan.slots_per_zone + 1)])
         for z in range(1, plan.zones_per_table + 1):
@@ -446,16 +463,21 @@ def _layout(wb, d: dc.Design) -> None:
             ws.cell(row=r, column=1, value=f"zone {z}").font = BOLD
             for s in range(1, plan.slots_per_zone + 1):
                 p = at.get((t, z, s))
-                grp = f"G{p.group}  " if p and many and p.role != dc.SPARE else ""
-                c = ws.cell(row=r, column=1 + s,
-                            value=f"{grp}{p.label}\n{p.barcode}" if p else "(empty)")
+                grp = (f"G{p.group}  " if p and many and p.role not in (dc.SPARE, dc.DISCARDED)
+                       else "")
+                promoted = f"  (for {p.swap[-4:]})" if p and p.swap and p.active else ""
+                c = ws.cell(row=r, column=1 + s, value=(
+                    f"{grp}{p.label}\n{p.barcode}{promoted}" if p else "(empty)"))
                 c.alignment = CENTER; c.border = BOX
                 if p is None:
                     c.font = Font(color="9CA3AF")
                     continue
+                if not p.active:        # failed / discarded: struck through, no colour
+                    c.font = Font(color="9CA3AF", strike=True)
+                    continue
                 bg, fg = colours.get((p.cohort, p.treatment), (SPARE_BG, "111827"))
                 c.fill = _fill(bg)
-                c.font = Font(color=fg, italic=p.role == dc.SACRIFICIAL)
+                c.font = Font(color=fg, italic=p.role == dc.SACRIFICIAL, bold=bool(p.swap))
             ws.row_dimensions[r].height = 32
         r += 3
     ws.column_dimensions["A"].width = 18
@@ -582,7 +604,7 @@ def _tags(wb, d: dc.Design, refs: Refs) -> None:
                     "role", "genotype", "cohort", "treatment"])
     for r, p in enumerate(sorted(d.pots, key=lambda p: (p.group, p.barcode)), 2):
         for j, v in enumerate((p.barcode, p.label, p.position, p.group,
-                               f"={refs.planting(p.group, p.cohort)}", p.role, p.genotype,
+                               f"={_planted(refs, p)}", p.role, p.genotype,
                                p.cohort or None, p.treatment or None)):
             ws.cell(row=r, column=1 + j, value=v)
         ws.cell(row=r, column=1).number_format = "@"
@@ -601,7 +623,7 @@ def _groups(wb, d: dc.Design, refs: Refs) -> None:
         r = g + 1
         ws.cell(row=r, column=1, value=g).font = BOLD
         ws.cell(row=r, column=2, value=f"={refs.plant[g]}").number_format = "DD MMM YYYY"
-        ws.cell(row=r, column=3, value=sum(p.group == g for p in d.pots))
+        ws.cell(row=r, column=3, value=sum(p.group == g and p.active for p in d.pots))
         for j, c in enumerate(plan.cohorts):
             ws.cell(row=r, column=4 + j, value=sum(
                 p.group == g and p.cohort == c.name and p.role == dc.MEASURED for p in d.pots))
@@ -664,7 +686,8 @@ def _jars(wb, d: dc.Design) -> None:
     for c in ws[1]:
         c.font = BOLD; c.alignment = Alignment(horizontal="center")
     for p in d.pots:
-        ws.append([p.barcode, f"{p.label} {p.position}"])
+        if p.active:                    # failed and discarded pots leave the station
+            ws.append([p.barcode, f"{p.label} {p.position}"])
     for row in ws.iter_rows(min_row=2, max_col=1):
         row[0].number_format = "@"                      # Text: keeps leading zeros
     _widths(ws, (16, 34))
@@ -742,7 +765,36 @@ def _info(wb, d: dc.Design) -> None:
     _widths(ws, (28, 20))
 
 
-def write(d: dc.Design, path: str) -> None:
+def _swaps(wb, swaps: list) -> None:
+    """Every swap so far: written by swap_app.py, read back by swaps.read_design_map."""
+    ws = wb.create_sheet("swaps")
+    _header(ws, 1, ["date", "failed_barcode", "spare_barcode", "spare_took_over", "note"])
+    for r, sw in enumerate(swaps, 2):
+        for c, v in enumerate((sw.date, sw.failed, sw.spare, sw.role, sw.note or None), 1):
+            ws.cell(row=r, column=c, value=v)
+        ws.cell(row=r, column=1).number_format = "DD MMM YYYY"
+    _widths(ws, (13, 16, 16, 24, 40))
+    ws.freeze_panes = "A2"
+
+
+PLAN_SHEET = "plan"
+_CHUNK = 30000                  # an Excel cell holds 32767 characters
+
+
+def _plan(wb, d: dc.Design) -> None:
+    """The plan and the design's own numbers as JSON, in a hidden sheet, so swap_app.py
+    can rebuild this workbook exactly (it never re-randomises the layout)."""
+    import json
+    ws = wb.create_sheet(PLAN_SHEET)
+    doc = json.dumps({"plan": d.plan.to_dict(), "groups": d.groups,
+                      "stagger_days": d.stagger_days, "offsets": d.offsets,
+                      "version": dc.__version__})
+    for i in range(0, len(doc), _CHUNK):
+        ws.cell(row=i // _CHUNK + 1, column=1, value=doc[i:i + _CHUNK])
+    ws.sheet_state = "hidden"
+
+
+def write(d: dc.Design, path: str, swaps: list | None = None) -> None:
     wb = Workbook()
     wb.remove(wb.active)
     refs = _timeline(wb, d)
@@ -754,5 +806,8 @@ def write(d: dc.Design, path: str) -> None:
     _asana(wb, d, refs)
     _jars(wb, d)
     _admin(wb, d)
+    if swaps:
+        _swaps(wb, swaps)
     _info(wb, d)
+    _plan(wb, d)
     wb.save(path)

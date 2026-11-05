@@ -137,10 +137,10 @@ class DesignWindow(QtWidgets.QMainWindow):
         tr = QtWidgets.QHBoxLayout(); tr.addWidget(self.treat_on); tr.addWidget(self.treat, 1)
         fl.addRow(tr)
         self.spares = QtWidgets.QSpinBox(); self.spares.setRange(0, 100)
-        self.spares.setToolTip("Spare pots of each genotype in EACH planting group: a spare can "
-                               "only replace a pot planted the same day. Placed at random "
-                               "like the rest.")
-        fl.addRow("Spares per genotype\nper planting group", self.spares)
+        self.spares.setToolTip("Spare pots of each genotype on EACH planting day (a group whose "
+                               "cohort is planted later has two): a spare only replaces a pot "
+                               "planted the same day. Placed at random like the rest.")
+        fl.addRow("Spares per genotype\nper planting day", self.spares)
         self.seed = QtWidgets.QSpinBox(); self.seed.setRange(0, 999999)
         self.seed.setToolTip("The same seed always gives the same layout and grouping. "
                              "Change it for a different randomisation.")
@@ -385,7 +385,7 @@ class DesignWindow(QtWidgets.QMainWindow):
             n = dc.count_pots(plan)
             cap = self.tables.value() * self.zones.value() * self.slots.value()
             sp = plan.spares_per_genotype_per_group * len(dc.genotypes(plan))
-            spares = f" + {sp} spares per planting group" if sp else ""
+            spares = f" + {sp} spares per planting day" if sp else ""
             self.total_lbl.setText(f"{n} pots{spares} / room for {cap}")
             self.total_lbl.setStyleSheet(f"font-weight:bold;color:{RED if n > cap else SLATE};")
         except dc.PlanError:
