@@ -55,8 +55,19 @@ WEEKEND_BG = "F8D9BE"
 OVER_BG = "FCA5A5"
 SPARE_BG = "D1D5DB"
 # layout colours: bright enough to tell apart across a bench
-BRIGHT = ("60A5FA", "4ADE80", "FACC15", "F87171", "C084FC", "F472B6", "22D3EE", "FB923C",
-          "A3E635", "2DD4BF", "818CF8", "FDA4AF")
+# layout colours: one colour FAMILY per cohort, one SHADE of it per treatment (light to
+# dark), so a cohort reads as one block of colour and its treatments as steps within it.
+# Each ramp runs light (100) to dark (900).
+FAMILIES = (
+    ("blue",   ("DBEAFE", "BFDBFE", "93C5FD", "60A5FA", "3B82F6", "2563EB", "1D4ED8", "1E40AF", "1E3A8A")),
+    ("green",  ("DCFCE7", "BBF7D0", "86EFAC", "4ADE80", "22C55E", "16A34A", "15803D", "166534", "14532D")),
+    ("orange", ("FFEDD5", "FED7AA", "FDBA74", "FB923C", "F97316", "EA580C", "C2410C", "9A3412", "7C2D12")),
+    ("purple", ("F3E8FF", "E9D5FF", "D8B4FE", "C084FC", "A855F7", "9333EA", "7E22CE", "6B21A8", "581C87")),
+    ("red",    ("FEE2E2", "FECACA", "FCA5A5", "F87171", "EF4444", "DC2626", "B91C1C", "991B1B", "7F1D1D")),
+    ("teal",   ("CCFBF1", "99F6E4", "5EEAD4", "2DD4BF", "14B8A6", "0D9488", "0F766E", "115E59", "134E4A")),
+    ("pink",   ("FCE7F3", "FBCFE8", "F9A8D4", "F472B6", "EC4899", "DB2777", "BE185D", "9D174D", "831843")),
+    ("yellow", ("FEF9C3", "FEF08A", "FDE047", "FACC15", "EAB308", "CA8A04", "A16207", "854D0E", "713F12")),
+)
 
 BOLD = Font(bold=True)
 HEAD = Font(bold=True, color="FFFFFF")
@@ -342,12 +353,33 @@ def _design(wb, d: dc.Design, refs: Refs) -> None:
     ws.auto_filter.ref = f"A1:{L(len(cols))}{len(d.pots) + 1}"
 
 
-def layout_colours(d: dc.Design) -> tuple[str, dict]:
-    """('group' | 'cohort', {key: hex}). By planting group when there are several (that is
-    what is planted together), else by cohort (what is flooded and measured together)."""
-    if d.groups > 1:
-        return "group", {g: BRIGHT[(g - 1) % len(BRIGHT)] for g in range(1, d.groups + 1)}
-    return "cohort", {c.name: BRIGHT[i % len(BRIGHT)] for i, c in enumerate(d.plan.cohorts)}
+def treatments(d: dc.Design) -> list[str]:
+    """Treatments in the order the plan first lists them ("" = no treatment)."""
+    out = []
+    for r in d.plan.rows:
+        t = r.treatment.strip()
+        if r.genotype.strip() and t not in out:
+            out.append(t)
+    return out
+
+
+def layout_colours(d: dc.Design) -> dict[tuple[str, str], tuple[str, str]]:
+    """{(cohort, treatment): (fill, text colour)}: a colour family per cohort, a shade per
+    treatment, spread from light to dark so neighbouring treatments differ clearly (one
+    treatment: the middle shade). White text on the darker shades."""
+    trts = treatments(d)
+    k = len(trts)
+    if k == 1:
+        idx = [4]
+    else:                       # shades 200-800 (100-900 past 7 treatments), evenly apart
+        lo, hi = (1, 7) if k <= 7 else (0, 8)
+        idx = [round(lo + i * (hi - lo) / (k - 1)) for i in range(k)]
+    out = {}
+    for ci, c in enumerate(d.plan.cohorts):
+        ramp = FAMILIES[ci % len(FAMILIES)][1]
+        for t, n in zip(trts, idx):
+            out[(c.name, t)] = (ramp[n], "FFFFFF" if n >= 5 else "111827")
+    return out
 
 
 def _layout(wb, d: dc.Design) -> None:
@@ -355,33 +387,42 @@ def _layout(wb, d: dc.Design) -> None:
     ws = wb.create_sheet("layout")
     ws["A1"] = (f"Bench layout: {plan.tables} tables x {plan.zones_per_table} zones x "
                 f"{plan.slots_per_zone} slots. Zone 1 at the taped end; slots count from the "
-                f"left. Cell: tag / barcode.")
+                f"left. Cell: " + ("planting group, " if d.groups > 1 else "") + "tag / barcode.")
     ws["A1"].font = NOTE
-    by, colours = layout_colours(d)
+    colours = layout_colours(d)
+    trts = treatments(d)
+    many = d.groups > 1
 
-    # ---- legend ----
-    ws["A3"] = f"Colour = {'planting group' if by == 'group' else 'cohort'}"
+    # ---- legend: cohorts down, treatments across, each swatch in its own colour ----
+    ws["A3"] = "Colour = cohort (colour family) and treatment (shade, light to dark)"
     ws["A3"].font = BOLD
     r = 4
-    for key, hex_ in colours.items():
-        if by == "group":
-            n = sum(p.group == key for p in d.pots)
-            text = f"Planting group {key}: planted {d.group_planting(key):%a %d %b %Y}, {n} pots"
-        else:
-            n = sum(p.cohort == key for p in d.pots)
-            text = f"Cohort {key}: {n} pots"
-        sw = ws.cell(row=r, column=1, value=f"G{key}" if by == "group" else key)
-        sw.fill = _fill(hex_); sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
-        ws.cell(row=r, column=2, value=text)
+    ws.cell(row=r, column=1, value="cohort \\ treatment").font = NOTE
+    for j, t in enumerate(trts):
+        h = ws.cell(row=r, column=2 + j, value=t or "(none)")
+        h.font = BOLD; h.alignment = CENTER
+    for c in d.plan.cohorts:
+        r += 1
+        ws.cell(row=r, column=1, value=f"Cohort {c.name}").font = BOLD
+        for j, t in enumerate(trts):
+            bg, fg = colours[(c.name, t)]
+            n = sum(p.cohort == c.name and p.treatment == t and p.role != dc.SPARE
+                    for p in d.pots)
+            sw = ws.cell(row=r, column=2 + j, value=f"{c.name} \u00b7 {t or '-'}  ({n})")
+            sw.fill = _fill(bg); sw.font = Font(bold=True, color=fg)
+            sw.alignment = CENTER; sw.border = BOX
+    r += 2
+    if many:
+        ws.cell(row=r, column=1, value="G1, G2 ...").font = BOLD
+        ws.cell(row=r, column=2, value="planting group, the first word in every cell: " + "; ".join(
+            f"G{g} planted {d.group_planting(g):%a %d %b}" for g in range(1, d.groups + 1)))
         r += 1
     if any(p.role == dc.SPARE for p in d.pots):
         sw = ws.cell(row=r, column=1, value="SPARE")
-        if by == "cohort":
-            sw.fill = _fill(SPARE_BG)
-        sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
+        sw.fill = _fill(SPARE_BG); sw.alignment = CENTER; sw.border = BOX; sw.font = BOLD
         ws.cell(row=r, column=2, value=(
-            "Spare: no cohort or treatment yet; replaces a failed pot of its own planting "
-            "group" + ("" if by == "cohort" else " (fill = that group)")))
+            "grey: spare, no cohort or treatment yet; replaces a failed pot of its own "
+            "planting group"))
         r += 1
     ws.cell(row=r, column=1, value="SAC").font = Font(bold=True, italic=True)
     ws.cell(row=r, column=1).alignment = CENTER
@@ -402,16 +443,16 @@ def _layout(wb, d: dc.Design) -> None:
             ws.cell(row=r, column=1, value=f"zone {z}").font = BOLD
             for s in range(1, plan.slots_per_zone + 1):
                 p = at.get((t, z, s))
+                grp = f"G{p.group}  " if p and many and p.role != dc.SPARE else ""
                 c = ws.cell(row=r, column=1 + s,
-                            value=f"{p.label}\n{p.barcode}" if p else "(empty)")
+                            value=f"{grp}{p.label}\n{p.barcode}" if p else "(empty)")
                 c.alignment = CENTER; c.border = BOX
                 if p is None:
                     c.font = Font(color="9CA3AF")
                     continue
-                key = p.group if by == "group" else p.cohort
-                c.fill = _fill(colours.get(key, SPARE_BG))
-                if p.role == dc.SACRIFICIAL:
-                    c.font = Font(italic=True)
+                bg, fg = colours.get((p.cohort, p.treatment), (SPARE_BG, "111827"))
+                c.fill = _fill(bg)
+                c.font = Font(color=fg, italic=p.role == dc.SACRIFICIAL)
             ws.row_dimensions[r].height = 32
         r += 3
     ws.column_dimensions["A"].width = 18
