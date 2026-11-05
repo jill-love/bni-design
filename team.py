@@ -2,7 +2,8 @@
 """
 team.py: who does which kind of task, for the Asana import (v0.1, 2026-11-05).
 
-    python team.py            # write asana_team.xlsx from the defaults, if it is missing
+    python team.py            # write asana_team.xlsx from the defaults, if it is missing;
+                              # otherwise add rows for task kinds it does not list yet
 
 asana_team.xlsx, beside the program, is the TEAM file: edited in Excel when people change,
 never in the setup window. Two tabs:
@@ -33,6 +34,7 @@ DEFAULT_ROLES = {
     "plant": ("Lina", ("Jill", "Sarah (Undergrad #1)")),
     "label_tables": ("Jill", ()),
     "watering": ("Sarah (Undergrad #1)", ("Jill",)),
+    "make_treatments": ("Lina", ()),
     "n2o": ("Sarah (Undergrad #1)", ("Jill",)),
     "harvest": ("Undergrad #2", ("Lina",)),
     "dry_weights": ("Sarah (Undergrad #1)", ("Jill",)),
@@ -106,9 +108,46 @@ def write(team: Team, path: str) -> None:
     wb.save(path)
 
 
+def upgrade(path: str) -> list[str]:
+    """Add a roles row, with its default, for every task kind the team file does not list
+    yet (a kind added to the program after the file was made), in TASK_KINDS order.
+    Nothing already in the file changes. Returns the kinds added."""
+    import openpyxl
+    from openpyxl.styles import PatternFill
+    yellow = PatternFill("solid", start_color="FEF9C3", end_color="FEF9C3")
+    wb = openpyxl.load_workbook(path)
+    ws = wb["roles"]
+    have = {str(r[0].value).strip(): r[0].row for r in ws.iter_rows(min_row=2) if r[0].value}
+    order = list(dc.TASK_KINDS)
+    added = []
+    for kind in order:
+        if kind in have:
+            continue
+        later = [have[k] for k in order[order.index(kind) + 1:] if k in have]
+        row = min(later) if later else ws.max_row + 1
+        ws.insert_rows(row)
+        for k, r in have.items():                   # rows below moved down by one
+            if r >= row:
+                have[k] = r + 1
+        a, cs = DEFAULT_ROLES.get(kind, ("", ()))
+        for c, v in enumerate([kind, dc.TASK_KINDS[kind], a or None]
+                              + [cs[i] if i < len(cs) else None
+                                 for i in range(COLLABORATORS)], 1):
+            ws.cell(row, c, value=v)
+        for c in range(3, 4 + COLLABORATORS):
+            ws.cell(row, c).fill = yellow
+        have[kind] = row
+        added.append(kind)
+    if added:
+        wb.save(path)
+    return added
+
+
 if __name__ == "__main__":
     if os.path.exists(TEAM_FILE):
-        print(f"{TEAM_FILE} exists; not overwritten")
+        added = upgrade(TEAM_FILE)
+        print(f"{TEAM_FILE}: " + (f"added {', '.join(added)}" if added
+                                  else "already lists every kind of task"))
         sys.exit(0)
     write(defaults(), TEAM_FILE)
     print(f"wrote {TEAM_FILE}: fill in the Asana emails on the people tab")
