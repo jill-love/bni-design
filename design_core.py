@@ -78,6 +78,7 @@ GONE = (FAILED, DISCARDED)
 # (Excel's WORKDAY, so the workbook recalculates them). Negative = before.
 TASK_LAGS = {
     "prefill": -1,          # pre-fill pots: the working day before planting
+    "print_labels": -1,     # every label, one session: the working day before the first planting
     "kcl_setup": -1,        # every KCl tube, one session: the working day before the
                             # experiment's first planting, with the other setup
     "swaps": 5,             # run the swap tool: a week (5 working days) after each planting
@@ -89,6 +90,7 @@ TASK_LAGS = {
 }
 # Every kind of task, in the order the team file (team.py) lists them: key -> what it is.
 TASK_KINDS = {
+    "print_labels": "Print all labels (pots, biomass bags, KCl tubes and tins)",
     "kcl_setup": "KCl soil collection setup (supplies, printing & labeling tubes)",
     "prefill": "Pre-fill pots with weighed soil",
     "plant": "Label pots, plant seed, and initial wet-up",
@@ -105,6 +107,14 @@ TASK_KINDS = {
     "kcl_extract": "KCl extractions",
     "kcl_ship": "Prep KCl extracts for shipping",
     "wash": "Wash pots for reuse",
+}
+
+# Label copies printed per pot or per harvested plant (the "Print all labels" task)
+LABEL_COPIES = {
+    "pot": 1,                 # every pot, spares included
+    "biomass_bag": 2,         # every harvested plant: a shoot bag and a root bag
+    "kcl": 4,                 # every soil sample: collection tube, weighed tube, soil water
+                              # tin, extract tube
 }
 
 KCL_BATCH_MAX = 72         # soil samples one KCl extraction can take
@@ -898,6 +908,18 @@ class Design:
                 "Make the treatment solutions", "Treatment",
                 "for " + ", ".join(f"{t} ({n[t]} pots)" for t in trts)
                 + f"; first applied day {plan.treatment_dap} after planting", "make_treatments")
+        # every label of the experiment, printed in one session with the setup
+        first = self.planting_days(1)[0][1][0]
+        pots = sum(1 for p in self.pots)
+        plants = sum(p.role in (MEASURED, SACRIFICIAL) for p in self.pots)
+        k = LABEL_COPIES
+        n = {"pot": pots * k["pot"], "biomass_bag": plants * k["biomass_bag"],
+             "kcl": plants * k["kcl"]}
+        add(("plant", 1, first), lag["print_labels"], "Print all labels", "Setup",
+            f"{sum(n.values())} labels: pots {n['pot']} ({k['pot']} x {pots}), biomass bags "
+            f"{n['biomass_bag']} ({k['biomass_bag']} x {plants}: shoot and root), KCl "
+            f"{n['kcl']} ({k['kcl']} x {plants}: collection tube, weighed tube, soil water "
+            f"tin, extract tube)", "print_labels")
         # KCl tubes for every soil sample, prepared in one session with the other setup
         hv = self.harvests()
         if hv:

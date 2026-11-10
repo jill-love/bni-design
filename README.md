@@ -35,6 +35,7 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Maintenance watering | each watering day (one task per day, for every group and cohort still being watered) |
    | Make the treatment solutions | once, the working day before the first treatment (only when the plan has treatments); lists each treatment and its pots |
    | Apply treatments | treatment day |
+   | Print all labels | once, the working day before the first planting: 1 per pot (spares included), 2 per harvested plant (shoot and root biomass bags), 4 per soil sample (collection tube, weighed tube, soil water tin, extract tube); copies in `LABEL_COPIES` |
    | KCl soil collection setup (gathering supplies, printing & labeling tubes) | once, for every soil sample of the experiment, with the setup: the working day before the first planting |
    | Flood | flood day |
    | N2O measurements | each of the cohort's N2O days |
