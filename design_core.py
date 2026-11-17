@@ -33,8 +33,10 @@ builds one row per pot, then:
      treatment_dap, else the plan's), flood and sacrificial harvest (the first N2O time
      before the first N2O DAP), N2O at each of the cohort's own times (e.g. 24, 48, 72 h
      after the flood), harvest after the last one. Daily N2O load is counted per calendar
-     day. Watering is Monday, Wednesday and Friday, after planting until the flood.
-     Treatment, flood, N2O and harvest may fall on any day, weekends included.
+     day. Watering is Monday, Wednesday and Friday, after planting until the flood; a
+     treatment on another day is watered in that day, and the next day's watering, if
+     any, is skipped. Treatment, flood, N2O and harvest may fall on any day, weekends
+     included.
   4. N2O ORDER. Per group and cohort the measured pots are put in loads of three (one
      pot per N2O column), each load mixing treatments and genotypes, with every cell
      spread over the three columns. The flood is done in the same order, so every pot
@@ -777,8 +779,17 @@ class Design:
         return ev
 
     def water(self, g: int, cohort: Cohort) -> list[dt.date]:
+        """Group g, cohort `cohort`'s watering days: Monday, Wednesday and Friday after
+        planting until the flood. A treatment is watered in: on a day that is not a
+        watering day the pots are watered that day too, and the next day's watering (if
+        the next day is one) is skipped. Without a treatment, nothing changes."""
         p0 = self.planting(g, cohort.name)
-        return water_days(p0, p0 + dt.timedelta(days=cohort.flood_dap))
+        days = water_days(p0, p0 + dt.timedelta(days=cohort.flood_dap))
+        t = self.plan.treat_dap(cohort)
+        if t is None or t < 1 or p0 + dt.timedelta(days=t) in days:
+            return days                       # untreated, at planting, or a watering day
+        treat = p0 + dt.timedelta(days=t)
+        return sorted([d for d in days if d != treat + dt.timedelta(days=1)] + [treat])
 
     def day_text(self, g: int, cohort: Cohort, day: dt.date) -> str:
         """What the timeline cell for group g, cohort `cohort` says on `day`."""

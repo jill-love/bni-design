@@ -15,7 +15,7 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
    | Event | When |
    |---|---|
    | Plant | DAP 0 |
-   | Water | **Monday, Wednesday and Friday**, from planting until the flood |
+   | Water | **Monday, Wednesday and Friday**, from planting until the flood. A treatment is watered in: if it falls on another day, the pots are watered on the treatment day and the next day's watering (if the next day is a watering day) is skipped. Without treatments, nothing changes. |
    | Treatment | on its DAP: the cohort's own, else the plan's |
    | Sacrificial harvest and flood | the cohort's first N2O time before its first N2O day (the day before, for 24 h) |
    | N2O | at each of the cohort's own times after the flood, e.g. 24, 48, 72 h |
