@@ -7,6 +7,7 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
 1. **Plan**: in one window, enter the genotypes, cohorts (time-trial groups), treatments and reps, plus the bench and the N2O capacity. **Spares are per genotype per planting group**, and a planting group is one planting date: a spare can only replace a pot of its genotype planted the same day. Set them as a **% of each group's pots** (10 % of a 39-pot group is 4, of a 20-pot group 2; rounded up, at least 1 per genotype in the group) or as a fixed number per genotype per group. They are added once the groups are known, and never change them. Spare tags carry their group: `B73-G2-SPARE-01`. The **Dosing station** box takes the WFPS target and flood WFPS (in %), the soil's bulk and particle density and air-dry moisture, the air-dry soil per pot and the empty pot weight; any of them may be left blank and filled in the workbook later.
 2. **Planting groups**: a planting group is **all the pots planted on one date**. N2O is measured one pot at a time, at most *max N2O measurements / day* (50 by default), so planting is staggered so that no day needs more than that, and **a flood never falls on an N2O day**. The pots are split into the **fewest equally sized rounds** that fit, planted at least 3 days apart by default (one round's 24 h and 48 h N2O days, then the next round's flood), or further apart if needed. The split is random but balanced: every genotype x cohort x treatment cell is spread over the rounds as evenly as it divides. A round is one planting group, or more when a cohort is planted later (below): then that cohort is its own planting group, a few days after the rest of its round.
    **N2O times are set per cohort**, in the cohort table: whole days after the flood, e.g. `24, 48, 72` for one cohort and `24, 48` for another (blank: 24, 48). The first N2O day stays the cohort's first sample; the flood is that many hours before it, and harvest follows the last sample. They are fixed when the workbook is made (shown in each calendar column's header); change them in the window and generate again.
+   **The treatment day can be set per cohort**, for a treatment time trial: the cohort table's *Treatment* column, e.g. 14, 16 and 18 days after planting for cohorts A, B and C. A blank cell uses the *Treatment on day* setting; a cohort with its own day is treated even when that setting is off. Each must come before the cohort's flood.
    **Cohorts that would collide are planted later, not respaced.** If one cohort's flood would fall on another's N2O day, the program keeps every cohort's days after planting exactly as entered and plants the later cohort a few days later instead (never earlier than the planting date). The cohort with the earliest first N2O day is planted on the planting date; each next one gets the smallest delay that clears the collision, 0 if none is needed. That cohort is then its own planting group, with its own date on the timeline (which may be typed over), its own spares and its own planting tasks.
 3. **Bench layout**: pots are spread over the **tables you say are available**, then the zones of each table. Each cell and each planting group is spread as evenly as it divides, and slots are random. A table holds up to 8 zones x 25 slots. Positions are written `T1-Z2-05`.
 4. **Timeline**: per planting group and cohort, all counted in days after planting (DAP):
@@ -15,7 +16,7 @@ Plans a BNI pot experiment and writes its design map workbook: where every pot g
    |---|---|
    | Plant | DAP 0 |
    | Water | **Monday, Wednesday and Friday**, from planting until the flood |
-   | Treatment | on its DAP |
+   | Treatment | on its DAP: the cohort's own, else the plan's |
    | Sacrificial harvest and flood | the cohort's first N2O time before its first N2O day (the day before, for 24 h) |
    | N2O | at each of the cohort's own times after the flood, e.g. 24, 48, 72 h |
    | Harvest | after the cohort's last N2O sample |
@@ -34,7 +35,7 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Run swaps: replace failed pots with spares, discard unused spares | a week (5 working days) after each planting day |
    | Maintenance watering | each watering day (one task per day, for every group and cohort still being watered) |
    | Make the treatment solutions | once, the working day before the first treatment (only when the plan has treatments); lists each treatment and its pots |
-   | Apply treatments | treatment day |
+   | Apply treatments | treatment day (one task per day; cohorts treated on different days are named) |
    | Print all labels | once, the working day before the first planting: 1 per pot (spares included), 2 per harvested plant (shoot and root biomass bags), 4 per soil sample (collection tube, weighed tube, soil water tin, extract tube); copies in `LABEL_COPIES` |
    | KCl soil collection setup (gathering supplies, printing & labeling tubes) | once, for every soil sample of the experiment, with the setup: the working day before the first planting |
    | Flood | flood day |
@@ -45,7 +46,7 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Plant dry weights measure & record | 3 working days after each harvest |
    | Wash pots for reuse | the working day after the final harvest |
 
-   The offsets are `TASK_LAGS` in `design_core.py`. In the workbook every due date is a formula on the timeline's yellow inputs (`WORKDAY` for the working-day offsets), so editing a planting date, the treatment day, a cohort's first N2O day or the watering days moves the tasks too.
+   The offsets are `TASK_LAGS` in `design_core.py`. In the workbook every due date is a formula on the timeline's yellow inputs (`WORKDAY` for the working-day offsets), so editing a planting date, a treatment day, a cohort's first N2O day or the watering days moves the tasks too.
 
 The same random seed always gives the same design.
 
@@ -53,7 +54,7 @@ The same random seed always gives the same design.
 
 | Sheet | What it holds |
 |---|---|
-| `timeline` | A day-by-day calendar, one column per planting group x cohort. **The yellow cells are inputs**: planting date, days between groups, treatment day, watering days (`Mon, Wed, Fri`), first N2O day per cohort, each group's planting date, and capacity. Edit one in Excel and the calendar redraws. *Flood pots* and *N2O pots* count each day, and turn red if N2O is over capacity or a flood lands on an N2O day. |
+| `timeline` | A day-by-day calendar, one column per planting group x cohort. **The yellow cells are inputs**: planting date, days between groups, treatment day, watering days (`Mon, Wed, Fri`), first N2O day and treatment day per cohort (blank: the treatment day above), each group's planting date, and capacity. Edit one in Excel and the calendar redraws. *Flood pots* and *N2O pots* count each day, and turn red if N2O is over capacity or a flood lands on an N2O day. |
 | `design` | One row per pot: barcode, role, genotype, cohort, treatment, rep, planting group, planting date (linked to the timeline), table, zone, slot, position, tag. |
 | `layout` | Each table as a zone x slot grid, in bright colours by planting group (by cohort when there is one group), with a legend. Sacrificial tags are italic. |
 | `flood_*` | Per cohort (and planting group): the sacrificial harvest, then the flood in N2O order, with columns to fill in. |

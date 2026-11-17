@@ -134,6 +134,8 @@ class DesignWindow(QtWidgets.QMainWindow):
         self.treat_on = QtWidgets.QCheckBox("Treatment on day")
         self.treat = QtWidgets.QSpinBox(); self.treat.setRange(0, 365); self.treat.setSuffix(" after planting")
         self.treat_on.toggled.connect(self.treat.setEnabled)
+        self.treat.setToolTip("Every cohort's treatment day, unless the cohort table gives a "
+                              "cohort its own (a treatment time trial).")
         tr = QtWidgets.QHBoxLayout(); tr.addWidget(self.treat_on); tr.addWidget(self.treat, 1)
         fl.addRow(tr)
         self.spares = QtWidgets.QSpinBox(); self.spares.setRange(0, 100)
@@ -211,12 +213,16 @@ class DesignWindow(QtWidgets.QMainWindow):
 
         coh = QtWidgets.QGroupBox("Cohorts (time trial)"); cl = QtWidgets.QVBoxLayout(coh)
         self.cohorts = SheetTable(("Cohort", "First N2O\n(days after planting)",
-                                   "N2O times\n(h after flood)"), numeric_cols=(1,))
+                                   "N2O times\n(h after flood)",
+                                   "Treatment\n(days after planting)"), numeric_cols=(1, 3))
         self.cohorts.setMinimumHeight(140)
         self.cohorts.setColumnWidth(0, 60); self.cohorts.setColumnWidth(1, 130)
+        self.cohorts.setColumnWidth(2, 110)
         self.cohorts.setToolTip("N2O times: whole days after the flood, e.g. 24, 48, 72. "
                                 "The flood is the first time before the first N2O day; "
-                                "harvest follows the last. Blank: 24, 48.")
+                                "harvest follows the last. Blank: 24, 48.\n"
+                                "Treatment: this cohort's own treatment day, for a treatment "
+                                "time trial (e.g. 14, 16, 18). Blank: the treatment day above.")
         cl.addWidget(self.cohorts)
         cb = QtWidgets.QHBoxLayout()
         add_c = QtWidgets.QPushButton("Add cohort"); add_c.clicked.connect(self._add_cohort)
@@ -320,6 +326,7 @@ class DesignWindow(QtWidgets.QMainWindow):
         for r, c in enumerate(p.cohorts):
             self.cohorts.set_text(r, 0, c.name); self.cohorts.set_text(r, 1, c.first_n2o_dap)
             self.cohorts.set_text(r, 2, ", ".join(str(h) for h in c.measure_hours))
+            self.cohorts.set_text(r, 3, "" if c.treatment_dap is None else c.treatment_dap)
         self.table.setRowCount(len(p.rows) + BLANK_ROWS)
         for r, row in enumerate(p.rows):
             for c, val in enumerate((row.genotype, row.cohort, row.treatment, row.reps,
@@ -349,7 +356,10 @@ class DesignWindow(QtWidgets.QMainWindow):
                 except ValueError:
                     raise dc.PlanError(f"cohort {n}: N2O times are not numbers: {t!r} "
                                        f"(e.g. 24, 48, 72)")
-                cohorts.append(dc.Cohort(n, num(self.cohorts, r, 1, "first N2O day"), hours))
+                treat = (num(self.cohorts, r, 3, "treatment day")
+                         if self.cohorts.text(r, 3) else None)
+                cohorts.append(dc.Cohort(n, num(self.cohorts, r, 1, "first N2O day"), hours,
+                                         treat))
         rows = []
         for r in range(self.table.rowCount()):
             g = self.table.text(r, 0)

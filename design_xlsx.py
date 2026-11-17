@@ -46,6 +46,8 @@ import design_core as dc
 
 HEAD_BG = "374151"         # the station windows' slate
 INPUT_BG = "FEF9C3"        # yellow: an input the timeline recalculates from
+TIMELINE_TOP = 10          # the timeline's cohort and planting group tables: header row
+TREAT_HEAD = "Treatment (DAP)"
 FLOOD_BG, FLOOD_FG = "4A86E8", "FFFFFF"
 N2O_BG = "DBEAFE"
 PLANT_BG = "DCFCE7"
@@ -122,7 +124,7 @@ class Refs:
         self.plant = {}            # group -> planting date cell
         self.n2o = {}              # cohort -> first N2O DAP cell
         self.lag = {}              # cohort -> days from the flood to its first N2O (24 h: 1)
-        self.treat = ""            # treatment DAP cell
+        self.treat = {}            # cohort -> its treatment DAP cell ("" when untreated)
         self.water_days = ""       # calendar column: the date when anything is watered, else ""
         self.water_who = ""        # calendar column: who is watered that day
         self.calendar = ""         # calendar column: the dates
@@ -146,7 +148,7 @@ class Refs:
         if kind == "plant":
             return self.planting(x[0], x[1])
         if kind == "treat":
-            return f"{self.planting(x[0], x[1])}+{self.treat}"
+            return f"{self.planting(x[0], x[1])}+{self.treat[x[1]]}"
         if kind == "flood":
             return self.flood_date(x[0], x[1])
         if kind == "n2o":
@@ -169,7 +171,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
                 "follows. Days are days after planting (DAP) of each pot's planting group: "
                 "every pot of a group is planted the same day. A cohort whose days would "
                 "collide with another's is planted later, as its own planting group, so its "
-                "days after planting never change.")
+                "days after planting never change. A cohort's treatment day is the one above "
+                "unless the cohort table gives it its own.")
     ws["A2"].font = NOTE
 
     params = [("Planting date, group 1", plan.planting_date, "DD MMM YYYY"),
@@ -182,10 +185,9 @@ def _timeline(wb, d: dc.Design) -> Refs:
         c = ws.cell(row=4 + i, column=2, value=val)
         c.number_format = fmt; _input(c)
     P1, GAP, TREAT, WATER, CAP = "$B$4", "$B$5", "$B$6", "$B$7", "$B$8"
-    refs.treat = f"timeline!{TREAT}"
 
-    top = 10
-    _header(ws, top, ["Cohort", "First N2O (DAP)", "Flood (DAP)"])
+    top = TIMELINE_TOP
+    _header(ws, top, ["Cohort", "First N2O (DAP)", "Flood (DAP)", TREAT_HEAD])
     coh_row = {}
     for i, c in enumerate(plan.cohorts):
         r = top + 1 + i
@@ -195,6 +197,11 @@ def _timeline(wb, d: dc.Design) -> Refs:
         _input(ws.cell(row=r, column=2, value=c.first_n2o_dap))
         refs.lag[c.name] = c.measure_hours[0] // 24
         ws.cell(row=r, column=3, value=f"=B{r}-{refs.lag[c.name]}").border = BOX
+        # the cohort's own treatment day (a treatment time trial), else the one above
+        t = ws.cell(row=r, column=4, value=c.treatment_dap if c.treatment_dap is not None
+                    else f'=IF({TREAT}="","",{TREAT})')
+        t.number_format = "0"; _input(t)
+        refs.treat[c.name] = f"timeline!$D${r}"
 
     _header(ws, top, ["Planting group", "Planting date", "Pots", "Measured", "Cohorts"], col=5)
     grp_row = {}
@@ -263,7 +270,8 @@ def _timeline(wb, d: dc.Design) -> Refs:
                 txt = f"{h} h N2O" + (", harvest" if off == offs[-1] else "")
                 f = f'IF($A{r}={pr}+{n2o}+{off},"{txt}",{f})'
             f = f'IF($A{r}={pr}+{n2o}-{lag},"{flood_txt}",{f})'
-            f = (f'IF(IF({TREAT}="",FALSE,$A{r}={pr}+{TREAT}),'
+            tr = f"$D${coh_row[c.name]}"
+            f = (f'IF(IF({tr}="",FALSE,$A{r}={pr}+{tr}),'
                  f'IF({watered},"Treatment; water","Treatment"),{f})')
             f = f'=IF($A{r}={pr},"Plant",{f})'
             cell = ws.cell(row=r, column=first_col + j, value=f)
@@ -817,10 +825,12 @@ def _info(wb, d: dc.Design) -> None:
         ws.append([k, v])
         ws.cell(row=ws.max_row, column=1).font = BOLD
     ws.append([])
-    ws.append(["cohort", "first N2O DAP", "planted, days after its round", "N2O after flood (h)"])
+    ws.append(["cohort", "first N2O DAP", "planted, days after its round", "N2O after flood (h)",
+               "treatment DAP"])
     for cc in plan.cohorts:
+        t = plan.treat_dap(cc)
         ws.append([cc.name, cc.first_n2o_dap, d.offsets.get(cc.name, 0),
-                   ", ".join(str(h) for h in cc.measure_hours)])
+                   ", ".join(str(h) for h in cc.measure_hours), "none" if t is None else t])
     ws.append([])
     ws.append(["genotype", "cohort", "treatment", "reps", "sacrificial"])
     for pr in plan.rows:

@@ -292,6 +292,16 @@ def _carry_sheet(old, new) -> int:
     return copied
 
 
+def _same_input(name, old, new, c) -> bool:
+    """The old map's cell at c's place is the same input: on the timeline, its table header
+    (or, above the tables, its label) says the same. An older map's column D held the
+    cohorts' planting delays where the treatment days are now."""
+    if name != "timeline":
+        return True
+    at = ((dx.TIMELINE_TOP, c.column) if c.row > dx.TIMELINE_TOP else (c.row, 1))
+    return old.cell(*at).value == new.cell(*at).value
+
+
 def _carry(old_wb, new_wb) -> dict:
     report = {"cells": 0, "inputs": 0, "sheets": []}
     for name in old_wb.sheetnames:
@@ -304,7 +314,8 @@ def _carry(old_wb, new_wb) -> dict:
                 for c in row:
                     if (c.fill.fill_type and (c.fill.start_color.rgb or "")[-6:] == dx.INPUT_BG
                             and old[c.coordinate].value is not None
-                            and old[c.coordinate].value != c.value):
+                            and old[c.coordinate].value != c.value
+                            and _same_input(name, old, new, c)):
                         c.value = old[c.coordinate].value
                         report["inputs"] += 1
         elif name == "admin":

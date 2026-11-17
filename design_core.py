@@ -29,12 +29,12 @@ builds one row per pot, then:
      as its own planting group,
      so every cohort keeps its days after planting and nothing is planted before the
      planting date.
-  3. SCHEDULE. Per group and cohort: plant (DAP 0), treatment (treatment_dap), flood and
-     sacrificial harvest (the first N2O time before the first N2O DAP), N2O at each of the
-     cohort's own times (e.g. 24, 48, 72 h after the flood),
-     harvest after the last one. Daily N2O load is counted per calendar day. Watering is
-     Monday, Wednesday and Friday, after planting until the flood. Treatment, flood, N2O
-     and harvest may fall on any day, weekends included.
+  3. SCHEDULE. Per group and cohort: plant (DAP 0), treatment (the cohort's own
+     treatment_dap, else the plan's), flood and sacrificial harvest (the first N2O time
+     before the first N2O DAP), N2O at each of the cohort's own times (e.g. 24, 48, 72 h
+     after the flood), harvest after the last one. Daily N2O load is counted per calendar
+     day. Watering is Monday, Wednesday and Friday, after planting until the flood.
+     Treatment, flood, N2O and harvest may fall on any day, weekends included.
   4. N2O ORDER. Per group and cohort the measured pots are put in loads of three (one
      pot per N2O column), each load mixing treatments and genotypes, with every cell
      spread over the three columns. The flood is done in the same order, so every pot
@@ -57,7 +57,7 @@ import random
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
 
-__version__ = "0.6"
+__version__ = "0.7"
 
 MAX_ZONES = 8              # a table holds at most 8 zones x 25 slots
 MAX_SLOTS = 25
@@ -129,6 +129,7 @@ class Cohort:
     name: str
     first_n2o_dap: int             # day after planting of the cohort's first N2O sample
     measure_hours: tuple[int, ...] = MEASURE_HOURS   # N2O after the flood, whole days
+    treatment_dap: int | None = None   # this cohort's treatment day; None: the plan's
 
     @property
     def flood_dap(self) -> int:
@@ -216,6 +217,18 @@ class Plan:
     def cohort(self, name: str) -> Cohort | None:
         return next((c for c in self.cohorts if c.name == name), None)
 
+    def treat_dap(self, cohort: Cohort | str) -> int | None:
+        """The day after planting cohort `cohort` is treated: its own day when it has one
+        (a treatment time trial: 14, 16, 18), else the plan's. None: not treated."""
+        c = self.cohort(cohort) if isinstance(cohort, str) else cohort
+        return c.treatment_dap if c is not None and c.treatment_dap is not None \
+            else self.treatment_dap
+
+    @property
+    def treat_per_cohort(self) -> bool:
+        """Cohorts are treated on different days."""
+        return len({self.treat_dap(c) for c in self.cohorts}) > 1
+
 
 class PlanError(ValueError):
     """The plan cannot be built; the message says what to fix."""
@@ -288,8 +301,11 @@ def validate(plan: Plan) -> list[str]:
         if c.flood_dap < 1:
             p.append(f"cohort {c.name}: the flood (first N2O day {c.first_n2o_dap} minus "
                      f"{h[0]} h) would fall before planting")
-        if plan.treatment_dap is not None and plan.treatment_dap >= c.flood_dap:
-            p.append(f"cohort {c.name}: treatment (DAP {plan.treatment_dap}) must come before "
+        t = plan.treat_dap(c)
+        if t is not None and t < 0:
+            p.append(f"cohort {c.name}: treatment day {t} is before planting")
+        elif t is not None and t >= c.flood_dap:
+            p.append(f"cohort {c.name}: treatment (DAP {t}) must come before "
                      f"the flood (DAP {c.flood_dap})")
     if not any(r.reps or r.sacrificial for r in plan.rows):
         p.append("the plan has no pots: enter reps")
@@ -748,8 +764,9 @@ class Design:
         has_sac = any(p.role == SACRIFICIAL and p.group == g and p.cohort == cohort.name
                       for p in self.pots)
         ev = [(p0, "Plant")]
-        if self.plan.treatment_dap is not None:
-            ev.append((day(self.plan.treatment_dap), "Treatment"))
+        t = self.plan.treat_dap(cohort)
+        if t is not None:
+            ev.append((day(t), "Treatment"))
         ev.append((day(cohort.flood_dap),
                    "Sacrificial harvest, flood" if has_sac else "Flood"))
         offs = cohort.offsets
@@ -783,7 +800,7 @@ class Design:
         if kind == "plant":
             return p0
         if kind == "treat":
-            return p0 + dt.timedelta(days=self.plan.treatment_dap)
+            return p0 + dt.timedelta(days=self.plan.treat_dap(c))
         if kind == "flood":
             return p0 + dt.timedelta(days=c.flood_dap)
         return p0 + dt.timedelta(days=c.first_n2o_dap + a[2])          # "n2o"
@@ -870,9 +887,17 @@ class Design:
                     f"unused spares{sfx}", "Planting",
                     f"swap tool (run_swaps.bat) on the design map, then reload the trial in "
                     f"the dosing station; {nsp} spare(s) planted that day", "swaps")
-                if plan.treatment_dap is not None:
-                    add(("treat", g, cs[0]), None, f"Apply treatments{sfx}", "Treatment",
-                        kind="treatment")
+                # one task per treatment day: cohorts treated on different days (a
+                # treatment time trial) get their own, named
+                by_day = {}
+                for c in cs:
+                    if plan.treat_dap(c) is not None:
+                        by_day.setdefault(plan.treat_dap(c), []).append(c)
+                for t, same in by_day.items():
+                    who_t = (f" - cohort{'s' if len(same) > 1 else ''} {', '.join(same)}"
+                             if len(by_day) > 1 else "")
+                    add(("treat", g, same[0]), None, f"Apply treatments{who_t}{sfx}",
+                        "Treatment", f"day {t} after planting", "treatment")
             for c in self.cohorts_of(g):
                 w = who(g, c.name)
                 sac = sum(p.role == SACRIFICIAL and p.group == g and p.cohort == c.name
@@ -901,13 +926,18 @@ class Design:
             t = r.treatment.strip()
             if r.genotype.strip() and t and t not in trts:
                 trts.append(t)
-        if plan.treatment_dap is not None and trts:
+        treated = [("treat", g, c.name) for g, c in self.cells()
+                   if plan.treat_dap(c) is not None]
+        if treated and trts:
             n = Counter(p.treatment for p in self.pots
                         if p.role in (MEASURED, SACRIFICIAL) and p.treatment)
-            add(("treat", 1, self.planting_days(1)[0][1][0]), lag["make_treatments"],
+            when = (", ".join(f"cohort {c.name} day {plan.treat_dap(c)}" for c in plan.cohorts
+                              if plan.treat_dap(c) is not None) + " after planting"
+                    if plan.treat_per_cohort else f"day {plan.treatment_dap} after planting")
+            add(min(treated, key=self.anchor_date), lag["make_treatments"],
                 "Make the treatment solutions", "Treatment",
                 "for " + ", ".join(f"{t} ({n[t]} pots)" for t in trts)
-                + f"; first applied day {plan.treatment_dap} after planting", "make_treatments")
+                + f"; applied {when}", "make_treatments")
         # every label of the experiment, printed in one session with the setup
         first = self.planting_days(1)[0][1][0]
         pots = sum(1 for p in self.pots)
