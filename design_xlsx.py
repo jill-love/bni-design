@@ -259,8 +259,15 @@ def _timeline(wb, d: dc.Design) -> Refs:
             pr = f"$F${grp_row[g]}"
             n2o = f"$B${coh_row[c.name]}"
             lag = refs.lag[c.name]
-            watered = (f'AND($A{r}>{pr},$A{r}<{pr}+{n2o}-{lag},'
-                       f'ISNUMBER(SEARCH(TEXT($A{r},"ddd"),{WATER})))')
+            tr = f"$D${coh_row[c.name]}"
+            # Mon/Wed/Fri after planting until the flood; a treatment on another day is
+            # watered in that day and the next day's watering (if any) is skipped
+            base = lambda x: (f'AND({x}>{pr},{x}<{pr}+{n2o}-{lag},'
+                              f'ISNUMBER(SEARCH(TEXT({x},"ddd"),{WATER})))')
+            td = f"({pr}+{tr})"
+            watered = (f'IF({tr}="",{base(f"$A{r}")},IF({tr}<1,{base(f"$A{r}")},'
+                       f'OR($A{r}={td},AND({base(f"$A{r}")},'
+                       f'NOT(AND($A{r}={td}+1,NOT({base(td)})))))))')
             flood_txt = ("Sacrificial harvest, flood"
                          if any(p.role == dc.SACRIFICIAL and p.group == g and p.cohort == c.name
                                 for p in d.pots) else "Flood")
@@ -270,7 +277,6 @@ def _timeline(wb, d: dc.Design) -> Refs:
                 txt = f"{h} h N2O" + (", harvest" if off == offs[-1] else "")
                 f = f'IF($A{r}={pr}+{n2o}+{off},"{txt}",{f})'
             f = f'IF($A{r}={pr}+{n2o}-{lag},"{flood_txt}",{f})'
-            tr = f"$D${coh_row[c.name]}"
             f = (f'IF(IF({tr}="",FALSE,$A{r}={pr}+{tr}),'
                  f'IF({watered},"Treatment; water","Treatment"),{f})')
             f = f'=IF($A{r}={pr},"Plant",{f})'

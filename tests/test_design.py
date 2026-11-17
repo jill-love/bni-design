@@ -295,7 +295,8 @@ def test_weekend_events_are_allowed_but_not_weekend_water():
     days = [day for day, _ in d.events(1, d.plan.cohort("A"))]
     assert days[0].weekday() == 6                                      # planted Sunday
     for c in d.plan.cohorts:
-        assert all(day.weekday() < 5 for day in d.water(1, c))
+        treat = d.planting(1, c.name) + dt.timedelta(days=d.plan.treat_dap(c))
+        assert all(day.weekday() < 5 or day == treat for day in d.water(1, c))
 
 
 def test_n2o_loads_mix_cells_and_spread_over_columns():
@@ -372,7 +373,9 @@ def test_lab_tasks_are_on_working_days_after_the_harvest():
     d = dc.build(p0_plan(planting_date=MON - dt.timedelta(days=2)))   # weekend harvests
     t = d.tasks()
     lab = ("Pre-fill", "KCl", "Plant dry weights", "Wash pots", "If using ZeaL", "Maintenance")
-    assert all(x.date.weekday() < 5 for x in t if x.name.startswith(lab))
+    treat = {x.date for x in _named(t, "Apply treatments")}         # watered in that day
+    assert all(x.date.weekday() < 5 for x in t if x.name.startswith(lab)
+               and not (x.name == "Maintenance watering" and x.date in treat))
     for c in d.plan.cohorts:
         final = d.events(1, c)[-1][0]
         mine = [x for x in t if x.name.endswith(f"cohort {c.name}")]
@@ -1107,6 +1110,65 @@ def test_cohort_treatment_days_calculate_in_the_workbook(tmp_path):
     import openpyxl
     for plan in (trial_plan(), p0_plan(cohorts=[dc.Cohort("A", 21, treatment_dap=12),
                                                 dc.Cohort("B", 24), dc.Cohort("C", 27)])):
+        d = dc.build(plan)
+        _check_timeline(formulas, openpyxl, d, tmp_path / "x.xlsx")
+        assert _asana_values(tmp_path / "x.xlsx") == _expected(d)
+
+
+# ---------------------------------------------------------------- treatments are watered in
+def _plain_water(d, g, c):
+    p0 = d.planting(g, c.name)
+    return dc.water_days(p0, p0 + dt.timedelta(days=c.flood_dap))
+
+
+@pytest.mark.parametrize("dap", range(1, 20))
+def test_a_treatment_is_watered_in(dap):
+    """Any weekday: on a watering day nothing changes; on another day the pots are watered
+    that day and the next day's watering, if the next day is one, is skipped."""
+    d = dc.build(p0_plan(treatment_dap=dap))
+    for g, c in d.cells():
+        plain = _plain_water(d, g, c)
+        treat = d.planting(g, c.name) + dt.timedelta(days=dap)
+        nxt = treat + dt.timedelta(days=1)
+        want = plain if treat in plain else sorted([x for x in plain if x != nxt] + [treat])
+        assert d.water(g, c) == want
+        assert d.day_text(g, c, treat) == "Treatment; water"
+
+
+def test_tuesday_treatment_skips_wednesday_saturday_skips_nothing():
+    d = dc.build(p0_plan(planting_date=MON, treatment_dap=15))     # planted Mon: DAP 15 Tue
+    g, c = d.cells()[0]
+    tue = d.planting(g, c.name) + dt.timedelta(days=15)
+    assert tue.strftime("%a") == "Tue"
+    w = d.water(g, c)
+    assert tue in w and tue + dt.timedelta(1) not in w
+    assert d.day_text(g, c, tue + dt.timedelta(1)) == ""
+    d = dc.build(p0_plan(planting_date=MON, treatment_dap=12))     # Sat: Sun is never watered
+    g, c = d.cells()[0]
+    sat = d.planting(g, c.name) + dt.timedelta(days=12)
+    assert d.water(g, c) == sorted(_plain_water(d, g, c) + [sat])
+
+
+def test_no_treatment_watering_unchanged():
+    d = dc.build(p0_plan(treatment_dap=None))
+    assert all(d.water(g, c) == _plain_water(d, g, c) for g, c in d.cells())
+    assert all(x.weekday() in dc.WATER_WEEKDAYS for x in d.water_days_all())
+
+
+def test_watering_tasks_follow_the_treatment():
+    d = dc.build(trial_plan())                         # A 14, B 16, C 18 days after planting
+    water = {t.date for t in _named(d.tasks(), "Maintenance watering")}
+    assert water == set(d.water_days_all())
+    for g, c in d.cells():
+        treat = d.planting(g, c.name) + dt.timedelta(days=d.plan.treat_dap(c))
+        assert treat in water
+
+
+def test_treatment_watering_calculates_in_the_workbook(tmp_path):
+    formulas = pytest.importorskip("formulas")
+    import openpyxl
+    for plan in (p0_plan(treatment_dap=15), p0_plan(treatment_dap=12),
+                 p0_plan(planting_date=MON + dt.timedelta(days=1), treatment_dap=13)):
         d = dc.build(plan)
         _check_timeline(formulas, openpyxl, d, tmp_path / "x.xlsx")
         assert _asana_values(tmp_path / "x.xlsx") == _expected(d)
