@@ -355,3 +355,33 @@ def test_spares_scale_with_each_groups_pots():
     assert sp == {k: max(1, math.ceil(v / 10)) for k, v in n.items()}
     assert sp[(1, "B73")] == 4 and sp[(2, "B73")] == 2 and sp[(1, "Mo17")] == 1
     assert (2, "Mo17") not in sp                      # no Mo17 in group 2: no Mo17 spare
+
+
+def test_edited_cohort_treatment_days_are_kept(tmp_path):
+    d, path = _map(tmp_path)
+    wb = openpyxl.load_workbook(path)
+    top = dx.TIMELINE_TOP
+    wb["timeline"].cell(top + 2, 4).value = 16                      # cohort B's own day
+    wb.save(path)
+    f = _first(d, role=dc.MEASURED, cohort="C")
+    S.rebuild(path, d, [S.swap(d, f.barcode, S.eligible_spares(d, f)[0].barcode, DAY)])
+    tl = openpyxl.load_workbook(path)["timeline"]
+    assert tl.cell(top + 2, 4).value == 16
+    assert str(tl.cell(top + 1, 4).value).startswith("=")          # A still the plan's day
+
+
+def test_an_older_maps_planting_delays_are_not_taken_as_treatment_days(tmp_path):
+    # maps made before planting groups were planting dates had the cohorts' planting
+    # delays, also yellow inputs, where the treatment days are now
+    d, path = _map(tmp_path)
+    wb = openpyxl.load_workbook(path)
+    tl, top = wb["timeline"], dx.TIMELINE_TOP
+    tl.cell(top, 4).value = "Planted (days after group)"
+    for i in range(3):
+        tl.cell(top + 1 + i, 4).value = i
+    wb.save(path)
+    f = _first(d, role=dc.MEASURED, cohort="C")
+    S.rebuild(path, d, [S.swap(d, f.barcode, S.eligible_spares(d, f)[0].barcode, DAY)])
+    tl = openpyxl.load_workbook(path)["timeline"]
+    assert tl.cell(top, 4).value == dx.TREAT_HEAD
+    assert all(str(tl.cell(top + 1 + i, 4).value).startswith("=") for i in range(3))

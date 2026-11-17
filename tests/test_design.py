@@ -1011,3 +1011,102 @@ def test_window_spares_as_percent_or_fixed():
     w.load_plan(p0_plan(spares_per_genotype_per_group=5))      # an older plan file
     assert w.spare_unit.currentIndex() == 1 and w.spares.value() == 5
     w.close()
+
+
+# ---------------------------------------------------------------- treatment day per cohort
+def trial_plan(**kw):
+    """A treatment time trial: cohort A treated 14 days after planting, B 16, C 18."""
+    return p0_plan(cohorts=[dc.Cohort("A", 21, treatment_dap=14),
+                            dc.Cohort("B", 24, treatment_dap=16),
+                            dc.Cohort("C", 27, treatment_dap=18)], **kw)
+
+
+def test_each_cohort_is_treated_on_its_own_day():
+    d = dc.build(trial_plan())
+    for c, dap in zip(d.plan.cohorts, (14, 16, 18)):
+        for g, k in d.cells():
+            if k.name == c.name:
+                treat = [day for day, t in d.events(g, k) if t == "Treatment"]
+                assert treat == [d.planting(g, k.name) + dt.timedelta(days=dap)]
+
+
+def test_a_blank_cohort_treatment_day_is_the_plans():
+    d = dc.build(p0_plan(cohorts=[dc.Cohort("A", 21), dc.Cohort("B", 24, treatment_dap=17),
+                                  dc.Cohort("C", 27)]))
+    assert [d.plan.treat_dap(c) for c in d.plan.cohorts] == [14, 17, 14]
+    assert d.plan.treat_per_cohort
+    assert not dc.build(p0_plan()).plan.treat_per_cohort
+
+
+def test_cohort_treatment_without_a_plan_treatment_day():
+    d = dc.build(p0_plan(treatment_dap=None,
+                         cohorts=[dc.Cohort("A", 21, treatment_dap=10), dc.Cohort("B", 24),
+                                  dc.Cohort("C", 27)]))
+    assert [d.plan.treat_dap(c) for c in d.plan.cohorts] == [10, None, None]
+    treated = {k.name for g, k in d.cells() for _, t in d.events(g, k) if t == "Treatment"}
+    assert treated == {"A"}
+    assert len(_named(d.tasks(), "Make the treatment solutions")) == 1
+
+
+def test_one_apply_task_per_treatment_day_naming_its_cohorts():
+    d = dc.build(trial_plan())
+    apply = _named(d.tasks(), "Apply treatments")
+    days = {(g, k.name): d.planting(g, k.name) + dt.timedelta(days=d.plan.treat_dap(k))
+            for g, k in d.cells()}
+    assert len(apply) == len(days)
+    for t in apply:
+        assert t.kind == "treatment" and t.section == "Treatment"
+        g, c = t.anchor[1], t.anchor[2]
+        assert t.date == days[(g, c)] and f"cohort {c}" in t.name
+    make = _named(d.tasks(), "Make the treatment solutions")
+    assert len(make) == 1 and make[0].date == dc.workday(min(days.values()), -1)
+    assert "cohort A day 14, cohort B day 16, cohort C day 18 after planting" in make[0].notes
+
+
+def test_same_day_cohorts_share_one_apply_task():
+    d = dc.build(p0_plan(cohorts=[dc.Cohort("A", 21, treatment_dap=14),
+                                  dc.Cohort("B", 24, treatment_dap=14), dc.Cohort("C", 27)]))
+    assert not d.plan.treat_per_cohort
+    assert [t.name for t in _named(d.tasks(), "Apply treatments")] == ["Apply treatments"] * \
+        len(_named(d.tasks(), "Label, plant seed"))
+
+
+@pytest.mark.parametrize("dap, words", [(20, "before the flood"), (-1, "before planting")])
+def test_a_cohort_treatment_day_is_checked(dap, words):
+    plan = p0_plan(cohorts=[dc.Cohort("A", 21, treatment_dap=dap), dc.Cohort("B", 24),
+                            dc.Cohort("C", 27)])
+    assert any(words in p and "cohort A" in p for p in dc.validate(plan))
+
+
+def test_cohort_treatment_days_are_saved_in_the_plan_file():
+    plan = dc.Plan.from_dict(trial_plan().to_dict())
+    assert [c.treatment_dap for c in plan.cohorts] == [14, 16, 18]
+    old = p0_plan().to_dict()
+    for c in old["cohorts"]:
+        c.pop("treatment_dap")                                  # plan files before this
+    assert all(c.treatment_dap is None for c in dc.Plan.from_dict(old).cohorts)
+
+
+def test_cohort_treatment_days_in_the_workbook(tmp_path):
+    import openpyxl
+    d = dc.build(trial_plan())
+    path = tmp_path / "x.xlsx"
+    dx.write(d, str(path))
+    ws = openpyxl.load_workbook(path)["timeline"]
+    top = dx.TIMELINE_TOP
+    assert ws.cell(top, 4).value == dx.TREAT_HEAD
+    assert [ws.cell(top + 1 + i, 4).value for i in range(3)] == [14, 16, 18]
+    ws = openpyxl.load_workbook(path)["info"]
+    rows = list(ws.iter_rows(values_only=True))
+    i = next(k for k, r in enumerate(rows) if r and r[0] == "cohort")
+    assert [r[4] for r in rows[i + 1:i + 4]] == [14, 16, 18]
+
+
+def test_cohort_treatment_days_calculate_in_the_workbook(tmp_path):
+    formulas = pytest.importorskip("formulas")
+    import openpyxl
+    for plan in (trial_plan(), p0_plan(cohorts=[dc.Cohort("A", 21, treatment_dap=12),
+                                                dc.Cohort("B", 24), dc.Cohort("C", 27)])):
+        d = dc.build(plan)
+        _check_timeline(formulas, openpyxl, d, tmp_path / "x.xlsx")
+        assert _asana_values(tmp_path / "x.xlsx") == _expected(d)
