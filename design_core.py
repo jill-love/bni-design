@@ -23,7 +23,8 @@ builds one row per pot, then:
   2. BENCH LAYOUT. Pots are dealt across the available tables, then the zones of each
      table, keeping every cell, and every planting group, as evenly spread as it
      divides; slots within a zone are random (empty slots too). Position text is
-     Tn-Zn-nn, the form the dosing station reads from a pot's tag.
+     Tn-Zn-Sn (table, zone, slot); the `jars` tag keeps the dosing station's Tn-Zn-nn,
+     the form it reads from a pot's tag.
      Inside a round, cohorts whose days would collide (one's flood on another's N2O
      day) are not refused or respaced: the later one is PLANTED LATER (cohort_offsets),
      as its own planting group,
@@ -394,6 +395,13 @@ class Pot:
 
     @property
     def position(self) -> str:
+        """Table, zone and slot as people read them: T1-Z1-S1."""
+        return f"T{self.table}-Z{self.zone}-S{self.slot}"
+
+    @property
+    def station_position(self) -> str:
+        """The same in the form the dosing station reads from a pot's `jars` tag
+        (T1-Z1-01): its run order and round report sort by it."""
         return f"T{self.table}-Z{self.zone}-{self.slot:02d}"
 
     @property

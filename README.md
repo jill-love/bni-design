@@ -64,14 +64,18 @@ The same random seed always gives the same design.
 | `groups` | Planting groups and the N2O load per day as designed. |
 | `assignments` | Who does each kind of task (Assignee, Collaborator 1, Collaborator 2) and everyone's Asana email, copied from the team file (below). Edit the yellow cells for this experiment. |
 | `asana_tasks` | One row per task: Name, Due Date, Section/Column, Description, Assignee, Collaborators (emails, looked up in `assignments`), and nothing else. **File > Save As > CSV**, then in Asana: project > Import > CSV. Due dates follow the timeline's inputs. Watering has a few spare rows at the bottom, used when an edit adds watering days; a watering row whose day an edit removes goes blank. Delete blank rows (filter on Name) before saving the CSV. |
-| `jars` | `barcode` + `tag` (the tag ends with the position). The pots for the dosing station. |
+| `jars` | `barcode` + `tag` (the tag ends with the position in the form the dosing station reads, `T1-Z1-01`). The pots for the dosing station. |
 | `admin` | The dosing station's WFPS inputs, as fractions (`wfps_target` 0.40 for 40 %), plus `trial_id`, the planting date and `profile` = `wet_up`. Values only, no formulas. With `jars`, the workbook is a complete trial: **Start New Trial...** on the station takes it as is. Any input left blank in the window is an empty yellow cell marked REQUIRED; fill it in before provisioning. |
 | `swaps` | Written by the swap tool: date, failed pot, the spare that replaced it, the role it took over, note. |
 | `info` | The plan as entered, the seed and the version. A hidden `plan` tab holds the same as JSON, for the swap tool. |
 
 ### Pot labels
 
-**Save workbook** also writes `labels_<workbook name>.zpl` beside the workbook: one label per pot on the `jars` tab, for the Zebra ZD621. They are the dosing station's labels, exactly as **Start New Trial** writes them: the tag and position at the top left, the target mass at the top right, a Code 128 barcode and the barcode beneath, 300 dpi, 3 x 1 inch. The target mass is the station's WFPS calculation on the *Dosing station* values; while one is blank the labels are written without it (the banner says so).
+**Save workbook** also writes `labels_<workbook name>.zpl` beside the workbook: one 3 x 1 inch label per pot on the `jars` tab, for the Zebra ZD621.
+
+- **QR code** of the pot's barcode at the left, the barcode in small text beneath it. The scanners read the QR code as the barcode, so the stations need no change.
+- **Black badge**: the cohort letter, and beneath it the pot's flood order in its planting group and cohort (`#11`, the flood sheet's order). A sacrificial pot says `SAC` (harvested on flood day, never flooded); a spare says `SPARE` (it has no cohort or treatment until it replaces a pot; write those on by hand, or reprint its label).
+- **Form**: the bench position (`T1-Z1-S1`), then PG (planting group), GENOTYPE and TREATMENT under small headings. A value too wide for its cell is printed smaller.
 
 To print, copy the file to the label computer and, in **Zebra Setup Utilities**, select the printer, **Open Communication With Printer**, **Open** the `.zpl` file, **Send to Printer**. Send one label first (from the first `^XA` to the first `^XZ`) to check its size and that it scans. A 203 dpi ZD621 needs `DPI = 203` in `labels.py`.
 
