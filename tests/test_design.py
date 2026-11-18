@@ -236,6 +236,44 @@ def test_every_cell_and_group_is_spread_evenly_over_tables():
         assert max(per.values()) - min(per.get(t, 0) for t in tables) <= 2, g
 
 
+def p1_plan(**kw):
+    """The P1 shape: one genotype, 3 cohorts flooded 2, 4 and 6 days after one treatment
+    day, 3 treatments x 10 reps + 4 SAC, 12 % spares: 144 pots, a full 6 x 3 x 8 bench,
+    in 4 planting groups (each cohort flooded twice)."""
+    base = dict(name="BNI-P1", seed=39937, planting_date=MON, treatment_dap=14,
+                cohorts=[dc.Cohort(c, n, (24, 48, 72)) for c, n in (("A", 17), ("B", 19), ("C", 21))],
+                rows=[dc.PlanRow("B73", c, t, 10, 4) for c in "ABC" for t in ("CTRL", "SN", "INH")],
+                spare_percent=12)
+    base.update(kw)
+    return dc.Plan(**base)
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3, 39937])
+def test_no_flood_has_a_treatment_bunched_on_a_table(seed):
+    """A flood (planting group x cohort) puts each treatment's pots on different tables
+    (5 pots on 6 tables: 5 tables), and each treatment and planting group is spread
+    evenly over the tables."""
+    for plan in (p1_plan(seed=seed), big_plan(seed=seed), p0_plan(seed=seed)):
+        d = dc.build(plan)
+        n_tab = plan.tables
+        for g, c in d.cells():
+            for role in (dc.MEASURED, dc.SACRIFICIAL):
+                for t in {p.treatment for p in d.pots}:
+                    mine = [p for p in d.pots if p.group == g and p.cohort == c.name
+                            and p.role == role and p.treatment == t]
+                    for geno in {p.genotype for p in mine}:
+                        same = [p.table for p in mine if p.genotype == geno]
+                        assert max(Counter(same).values(), default=0) <= -(-len(same) // n_tab), \
+                            (g, c.name, role, t, geno, sorted(same))
+        if plan.name == "BNI-P1":
+            for t in ("CTRL", "SN", "INH"):
+                per = Counter(p.table for p in d.pots if p.treatment == t and p.role == dc.MEASURED)
+                assert max(per.values()) - min(per.get(k, 0) for k in range(1, n_tab + 1)) <= 1, t
+            for g in range(1, d.groups + 1):
+                per = Counter(p.table for p in d.pots if p.group == g)
+                assert max(per.values()) - min(per.get(k, 0) for k in range(1, n_tab + 1)) <= 1, g
+
+
 def test_zones_are_balanced_within_a_table():
     d = dc.build(big_plan())
     for t in range(1, 7):

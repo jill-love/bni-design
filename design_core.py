@@ -21,8 +21,10 @@ builds one row per pot, then:
      fixed `spares_per_genotype_per_group`. They are never measured, so they never change
      the number of rounds.
   2. BENCH LAYOUT. Pots are dealt across the available tables, then the zones of each
-     table, keeping every cell, and every planting group, as evenly spread as it
-     divides; slots within a zone are random (empty slots too). Position text is
+     table, keeping as evenly spread as they divide (SPREAD, in this order): each
+     flood's pots of a treatment (a flood is a planting group x cohort: 5 pots on 6
+     tables go on 5 different tables), each treatment over the experiment, every cell,
+     every planting group; slots within a zone are random (empty slots too). Position text is
      Tn-Zn-Sn (table, zone, slot); the `jars` tag keeps the dosing station's Tn-Zn-nn,
      the form it reads from a pot's tag.
      Inside a round, cohorts whose days would collide (one's flood on another's N2O
@@ -472,18 +474,23 @@ def split_groups(plan: Plan, pots: list[Pot], rounds_n: int, stagger: int,
 
 
 def _deal(pots: list[Pot], bins: list, rng: random.Random, key_extra=None,
-          capacity: dict | None = None) -> dict:
-    """Assign every pot to a bin so each cell, then each bin's total, is as even as it
-    divides. Cells are dealt one after another in random order, pots within a cell in
-    random order; ties between bins are broken at random. Returns {id(pot): bin}."""
+          capacity: dict | None = None, keys: list | None = None) -> dict:
+    """Assign every pot to a bin so the pots sharing each key are as evenly spread over
+    the bins as they divide, the keys in order of priority, then each bin's total.
+    `keys` are functions of a pot; the first defines the cells that are dealt (default:
+    the pot's cell, then `key_extra`). Cells are dealt one after another, big ones first,
+    in random order otherwise, pots within a cell in random order; ties between bins are
+    broken at random. Returns {id(pot): bin}."""
+    keys = keys or [lambda p: p.cell] + ([key_extra] if key_extra else [])
     by_cell = defaultdict(list)
     for p in pots:
-        by_cell[p.cell].append(p)
+        first = keys[0][0] if isinstance(keys[0], tuple) else keys[0]
+        by_cell[first(p)].append(p)
     cells = list(by_cell)
     rng.shuffle(cells)
     cells.sort(key=lambda c: -len(by_cell[c]))       # big cells first: they set the shape
-    cell_n = defaultdict(Counter)
-    extra_n = defaultdict(Counter)
+    # per priority, per key in it: {key value: {bin: pots}}
+    n = [[defaultdict(Counter) for _ in (k if isinstance(k, tuple) else (k,))] for k in keys]
     total = Counter()
     out = {}
     for c in cells:
@@ -493,14 +500,71 @@ def _deal(pots: list[Pot], bins: list, rng: random.Random, key_extra=None,
             open_bins = [b for b in bins if capacity is None or total[b] < capacity[b]]
             if not open_bins:
                 raise PlanError("no room left on the bench")
-            ex = key_extra(p) if key_extra else None
-            b = min(open_bins, key=lambda b: (cell_n[c][b], extra_n[ex][b], total[b],
-                                              rng.random()))
+            kv = [[k(p) for k in (key if isinstance(key, tuple) else (key,))] for key in keys]
+            # a tuple of keys is one priority: their counts are added up
+            b = min(open_bins, key=lambda b: (*(sum(n[i][j][v][b] for j, v in enumerate(kv[i]))
+                                                for i in range(len(keys))),
+                                              total[b], rng.random()))
             out[id(p)] = b
-            cell_n[c][b] += 1
-            extra_n[ex][b] += 1
+            for i in range(len(keys)):
+                for j, v in enumerate(kv[i]):
+                    n[i][j][v][b] += 1
             total[b] += 1
     return out
+
+
+def _even_out(pots: list[Pot], bin_of: dict, weighted: list, rng: random.Random,
+              passes: int = 20) -> None:
+    """Swap pots between bins while a swap makes the spread more even: the sum, over
+    each (weight, key), of weight x the squared count of every key value in every bin
+    (the bin totals never change, so this is the spread's variance). Pots are tried in
+    random order; stops when a whole pass finds no better swap. Edits `bin_of`."""
+    n = [Counter() for _ in weighted]
+    vals = [[k(p) for _, k in weighted] for p in pots]
+    for i, p in enumerate(pots):
+        for j in range(len(weighted)):
+            n[j][(vals[i][j], bin_of[id(p)])] += 1
+    idx = list(range(len(pots)))
+    for _ in range(passes):
+        rng.shuffle(idx)
+        better = False
+        for a in idx:
+            for b in idx:
+                A, B = bin_of[id(pots[a])], bin_of[id(pots[b])]
+                if A == B:
+                    continue
+                delta = 0
+                for j, (w, _) in enumerate(weighted):
+                    va, vb = vals[a][j], vals[b][j]
+                    if va == vb:
+                        continue
+                    # va moves A -> B, vb moves B -> A: change in the sum of squares
+                    delta += w * (2 * (n[j][(va, B)] - n[j][(va, A)] + 1)
+                                  + 2 * (n[j][(vb, A)] - n[j][(vb, B)] + 1))
+                if delta < 0:
+                    for j in range(len(weighted)):
+                        va, vb = vals[a][j], vals[b][j]
+                        n[j][(va, A)] -= 1; n[j][(va, B)] += 1
+                        n[j][(vb, B)] -= 1; n[j][(vb, A)] += 1
+                    bin_of[id(pots[a])], bin_of[id(pots[b])] = B, A
+                    better = True
+        if not better:
+            return
+
+
+# What the bench layout spreads evenly over the tables, then over each table's zones, in
+# order of priority: each flood's pots of a treatment (a flood is one planting group x
+# cohort), so no flood has a treatment bunched on one side; the pots per table (zone);
+# each treatment over the whole experiment; each planting group; each cohort x treatment.
+SPREAD = (lambda p: (p.group, p.cell),
+          lambda p: True,
+          lambda p: (p.role, p.treatment),
+          lambda p: p.group,
+          lambda p: p.cell)
+# then pots are swapped between tables (and zones) while that evens out the spread (a
+# swap keeps the pots per table), weighted so a flood's treatment is never bunched to
+# even out anything else
+EVEN_OUT = ((1000, SPREAD[0]), (10, SPREAD[2]), (10, SPREAD[3]), (1, SPREAD[4]))
 
 
 # ======================================================================================
@@ -599,15 +663,17 @@ def place(plan: Plan, pots: list[Pot], rng: random.Random) -> None:
     """Sets pot.table, .zone, .slot."""
     tables = list(range(1, plan.tables + 1))
     per_table = plan.zones_per_table * plan.slots_per_zone
-    t_of = _deal(pots, tables, rng, key_extra=lambda p: p.group,
+    t_of = _deal(pots, tables, rng, keys=list(SPREAD),
                  capacity={t: per_table for t in tables})
+    _even_out(pots, t_of, list(EVEN_OUT), rng)
     for p in pots:
         p.table = t_of[id(p)]
     zones = list(range(1, plan.zones_per_table + 1))
     for t in tables:
         on_t = [p for p in pots if p.table == t]
-        z_of = _deal(on_t, zones, rng, key_extra=lambda p: p.group,
+        z_of = _deal(on_t, zones, rng, keys=list(SPREAD),
                      capacity={z: plan.slots_per_zone for z in zones})
+        _even_out(on_t, z_of, list(EVEN_OUT), rng)
         for p in on_t:
             p.zone = z_of[id(p)]
         for z in zones:
