@@ -1,25 +1,44 @@
-"""Pot labels for a Zebra printer (ZD621, ZPL), written beside the design map.
+"""Labels for a Zebra printer (ZD621, ZPL), written with the design map: one folder,
+labels_<workbook name>/, of seven files, each in the order its labels are used.
 
-One 3 x 1 inch label per pot that goes to the station (the `jars` tab):
+    labels_PLANTING.zpl        every pot (spares too): planting group, then position
+    labels_HARVEST_SHOOT.zpl   shoot bags  } every measured and sacrificial pot:
+    labels_HARVEST_ROOT.zpl    root bags   } harvest date, then planting group and
+    labels_KCL_COLLECT.zpl     } KCl       } cohort, then flood order (a sacrificial
+    labels_KCL_WEIGHED.zpl     } tubes     } pot: its harvest order on flood day)
+    labels_KCL_TIN.zpl         } and tin   }
+    labels_KCL_EXTRACT.zpl     }           }
+
+All are 3 x 1 inch, in one layout: a QR code at the left with its text beneath it, a
+black badge saying what the label is for, and a small form.
+
+Pot label (planting): QR = the pot's barcode (what the stations scan). Badge: the cohort
+letter and the pot's flood order in its group and cohort (#11); for a sacrificial pot
+SAC and its harvest order on flood day (SAC 2, its row on the flood sheet's sacrificial
+list); SPARE for a spare. Form: position, then planting group, genotype and treatment.
 
     +--------------------------------------------------------------+
     | [QR ]  |#######|  POSITION                                    |
     | [QR ]  |#  B  #|  T1-Z1-S1                                    |
-    | [QR ]  |#     #|  ---------------------------------------    |
     |        |# #11 #|  PG | GENOTYPE      | TREATMENT              |
     | S014   |#######|  4  | B73           | INH                    |
     +--------------------------------------------------------------+
 
-- a QR code of the pot's barcode, the barcode in small text beneath it (the scanners
-  read the QR code as the barcode, so the stations need no change);
-- a black badge: the cohort letter and the pot's flood order in its group and cohort
-  (#11); SAC for a sacrificial pot (harvested on flood day, never flooded); SPARE for a
-  spare (no cohort or treatment until it replaces a pot);
-- the bench position, then planting group, genotype and treatment, each under a small
-  heading. A value too wide for its cell is printed smaller.
+Bag and tube labels: QR = the pot's barcode + -SH (shoot), -RT (root), -K1 to -K4 (KCl
+collect, weighed, tin, extract), so every label has its own scan. Badge: SHOOT / ROOT +
+HARVEST + the harvest date; KCl + the step, with the harvest date on COLLECT only (the
+later steps are not done on harvest day). Form: the pot, then cohort and flood order,
+genotype and treatment.
 
-Print the file with Zebra Setup Utilities: Open Communication With Printer > Open >
-Send to Printer."""
+    +--------------------------------------------------------------+
+    | [QR ]  |#SHOOT#|  POT                                         |
+    | [QR ]  |HARVEST|  BNI-P1-S014                                 |
+    |        |22 DEC#|  COHORT | GENOTYPE | TREATMENT               |
+    | S014-SH|#######|  B #11  | B73      | INH                     |
+    +--------------------------------------------------------------+
+
+A value too wide for its cell is printed smaller. Print a file with Zebra Setup
+Utilities: Open Communication With Printer > Open > Send to Printer."""
 from __future__ import annotations
 
 import os
@@ -76,7 +95,7 @@ def zpl_label(p: dc.Pot, dpi: int = DPI, w_in: float = LABEL_IN[0],
     else:
         out.append(_text(X(bx), Y(by + 8), S(_fit(p.cohort, 150, bw - 20)), p.cohort,
                          w=X(bw), centre=True, reverse=True))
-        order = "SAC" if p.role == dc.SACRIFICIAL else f"#{p.seq}"
+        order = f"SAC {p.seq}" if p.role == dc.SACRIFICIAL else f"#{p.seq}"
         out.append(_text(X(bx), Y(by + 166), S(_fit(order, 76, bw - 20)), order, w=X(bw),
                          centre=True, reverse=True))
 
@@ -99,23 +118,115 @@ def zpl_label(p: dc.Pot, dpi: int = DPI, w_in: float = LABEL_IN[0],
     return "".join(out) + "^XZ"
 
 
+# --- bag and tube labels -----------------------------------------------------------
+# (file name, QR suffix, badge lines; "{date}" is the harvest date)
+SAMPLES = (("HARVEST_SHOOT", "SH", (("SHOOT", 76), ("HARVEST", 46), ("{date}", 56))),
+           ("HARVEST_ROOT", "RT", (("ROOT", 76), ("HARVEST", 46), ("{date}", 56))),
+           ("KCL_COLLECT", "K1", (("KCl", 64), ("COLLECT", 46), ("{date}", 46))),
+           ("KCL_WEIGHED", "K2", (("KCl", 84), ("WEIGHED", 50))),
+           ("KCL_TIN", "K3", (("KCl", 84), ("TIN", 50))),
+           ("KCL_EXTRACT", "K4", (("KCl", 84), ("EXTRACT", 50))))
+
+
+def sample_label(p: dc.Pot, suffix: str, badge: tuple, harvest, dpi: int = DPI,
+                 w_in: float = LABEL_IN[0], h_in: float = LABEL_IN[1]) -> str:
+    """One bag or tube label of pot `p` (see the module docstring)."""
+    sx, sy = w_in * dpi / 900, h_in * dpi / 300
+    X = lambda v: int(round(v * sx))
+    Y = lambda v: int(round(v * sy))
+    S = lambda v: max(1, int(round(v * min(sx, sy))))
+    code = f"{p.barcode}-{suffix}"
+    out = [f"^XA^CI28^PW{X(900)}^LL{Y(300)}"]
+    mag = max(1, S(7))                      # 7 dots a module: a version 2 code still fits
+    out.append(f"^FO{X(30)},{Y(24)}^BQN,2,{mag}^FD{QR_ECC}A,{code}^FS")
+    # the printer's hyphens are wide: allow 0.7 of the height a character, which Labelary
+    # confirms fits (BNI-P1-S050-K4 at 22 dots on 220)
+    out.append(_text(X(6), Y(228), S(max(12, min(26, int(220 / (0.7 * len(code)))))), code,
+                     w=X(220), centre=True))
+
+    bx, by, bw, bh = 230, 18, 190, 264
+    out.append(_box(X(bx), Y(by), X(bw), Y(bh), X(bw)))
+    date = f"{harvest.day} {harvest:%b}".upper()
+    lines = [(t.format(date=date), size) for t, size in badge]
+    lines = [(t, _fit(t, size, bw - 20)) for t, size in lines]
+    gap = (bh - sum(size for _, size in lines)) / (len(lines) + 1)
+    y = by + gap
+    for t, size in lines:
+        out.append(_text(X(bx), Y(int(y)), S(size), t, w=X(bw), centre=True, reverse=True))
+        y += size + gap
+
+    x, r = bx + bw + 22, 886
+    out.append(_text(X(x), Y(12), S(26), "POT"))
+    out.append(_text(X(x), Y(40), S(_fit(p.barcode, 84, r - x)), p.barcode))
+    out.append(_box(X(x), Y(140), X(r - x), Y(3)))
+    order = f"SAC {p.seq}" if p.role == dc.SACRIFICIAL else f"#{p.seq}"
+    cells = [("COHORT", f"{p.cohort} {order}", 190), ("GENOTYPE", p.genotype, 120),
+             ("TREATMENT", p.treatment or "-", r - x - 310)]
+    size = min(_fit(v, 66, w - 22) for _, v, w in cells)        # one size for the row
+    cx = x
+    for i, (head, value, w) in enumerate(cells):
+        out.append(_text(X(cx), Y(152), S(_fit(head, 24, w - 18)), head))
+        out.append(_text(X(cx), Y(186), S(size), value))
+        cx += w
+        if i < len(cells) - 1:
+            out.append(_box(X(cx - 12), Y(150), X(3), Y(132)))
+    return "".join(out) + "^XZ"
+
+
+# --- which pots, in which order ---------------------------------------------------------
 def pots(d: dc.Design) -> list[dc.Pot]:
-    """The pots that get a label: those on the `jars` tab, in its order."""
-    return [p for p in d.pots if p.active]
+    """The pots that get a pot label (those on the `jars` tab), in planting order:
+    planting group, then table, zone and slot."""
+    return sorted((p for p in d.pots if p.active),
+                  key=lambda p: (p.group, p.table, p.zone, p.slot))
+
+
+def harvest_date(d: dc.Design, p: dc.Pot):
+    """A sacrificial pot is harvested on its flood day, a measured pot after its cohort's
+    last N2O sample."""
+    c = d.plan.cohort(p.cohort)
+    if p.role == dc.SACRIFICIAL:
+        return d.anchor_date(("flood", p.group, c.name))
+    return d.anchor_date(("n2o", p.group, c.name, c.last_offset))
+
+
+def harvested(d: dc.Design) -> list[dc.Pot]:
+    """The pots that are harvested (measured and sacrificial), in harvest order: date,
+    then planting group and cohort, then flood order (a sacrificial pot's: its harvest
+    order on flood day)."""
+    names = [c.name for c in d.plan.cohorts]
+    return sorted((p for p in d.pots if p.active and p.role in (dc.MEASURED, dc.SACRIFICIAL)),
+                  key=lambda p: (harvest_date(d, p), p.group, names.index(p.cohort),
+                                 p.role != dc.SACRIFICIAL, p.seq))
 
 
 def zpl(d: dc.Design, dpi: int = DPI) -> str:
+    """The planting file's labels."""
     return "".join(zpl_label(p, dpi) for p in pots(d))
 
 
-def path_for(workbook: str) -> str:
-    """labels_<workbook name>.zpl beside the workbook."""
+def files(d: dc.Design, dpi: int = DPI) -> dict[str, tuple[str, int]]:
+    """{file name: (ZPL, labels)} for the seven files."""
+    out = {"labels_PLANTING.zpl": (zpl(d, dpi), len(pots(d)))}
+    hv = harvested(d)
+    for name, suffix, badge in SAMPLES:
+        out[f"labels_{name}.zpl"] = ("".join(sample_label(p, suffix, badge, harvest_date(d, p), dpi)
+                                             for p in hv), len(hv))
+    return out
+
+
+def folder_for(workbook: str) -> str:
+    """labels_<workbook name>/ beside the workbook."""
     stem = os.path.splitext(os.path.basename(workbook))[0]
-    return os.path.join(os.path.dirname(os.path.abspath(workbook)), f"labels_{stem}.zpl")
+    return os.path.join(os.path.dirname(os.path.abspath(workbook)), f"labels_{stem}")
 
 
-def write(d: dc.Design, path: str, dpi: int = DPI) -> int:
-    """Write the labels; returns how many."""
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(zpl(d, dpi))
-    return len(pots(d))
+def write(d: dc.Design, folder: str, dpi: int = DPI) -> dict[str, int]:
+    """Write the seven files into `folder` (made if missing); {file name: labels}."""
+    os.makedirs(folder, exist_ok=True)
+    out = {}
+    for name, (text, n) in files(d, dpi).items():
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+            f.write(text)
+        out[name] = n
+    return out
