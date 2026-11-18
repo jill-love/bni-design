@@ -38,8 +38,12 @@ def _fit(text: str, size: int, width: int) -> int:
 
 
 def _text(x, y, size, text, w=None, centre=False, reverse=False) -> str:
+    """A text field; with `w`, a one-line block `w` dots wide. A centred block's line ends
+    with \\& (a line break): Zebra printers only justify a line that ends with one."""
     block = f"^FB{w},1,0,{'C' if centre else 'L'}" if w else ""
-    return f"^FO{x},{y}{block}^A0N,{size},{size}{'^FR' if reverse else ''}^FD{text}^FS"
+    end = "\\&" if w and centre else ""
+    return (f"^FO{x},{y}{block}^A0N,{size},{size}{'^FR' if reverse else ''}"
+            f"^FD{text}{end}^FS")
 
 
 def _box(x, y, w, h, t=None) -> str:

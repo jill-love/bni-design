@@ -16,7 +16,7 @@ from test_design import SOIL, p0_plan
 
 def _texts(z):
     """[(x, height, text, reversed)] of a label's text fields."""
-    return [(int(x), int(h), t, bool(rv)) for x, h, rv, t in
+    return [(int(x), int(h), t.removesuffix("\\&"), bool(rv)) for x, h, rv, t in
             re.findall(r"\^FO(\d+),\d+(?:\^FB\d+,1,0,[LC])?\^A0N,(\d+),\d+(\^FR)?\^FD(.*?)\^FS", z)]
 
 
@@ -32,6 +32,13 @@ def test_one_label_per_station_pot():
         texts = {t for _, _, t, _ in _texts(one)}
         assert {p.barcode, p.position, str(p.group), p.genotype} <= texts
         assert {"POSITION", "PG", "GENOTYPE"} <= texts
+
+
+def test_centred_text_ends_with_a_line_break():
+    """Zebra printers only centre a field block's line when it ends with \\&."""
+    p = dc.build(p0_plan()).pots[0]
+    blocks = re.findall(r"\^FB\d+,1,0,C\^A0N,\d+,\d+(?:\^FR)?\^FD(.*?)\^FS", LB.zpl_label(p))
+    assert len(blocks) == 3 and all(t.endswith("\\&") for t in blocks)
 
 
 def test_the_badge_says_cohort_and_flood_order():
