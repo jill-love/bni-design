@@ -70,7 +70,8 @@ class SheetTable(QtWidgets.QTableWidget):
             self.paste(); return
         if ev.matches(QtGui.QKeySequence.Copy):
             self.copy(); return
-        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.state() != self.EditingState:
+        editing = self.state() == QtWidgets.QAbstractItemView.State.EditingState
+        if ev.key() in (Qt.Key_Delete, Qt.Key_Backspace) and not editing:
             for it in self.selectedItems():
                 it.setText("")
             return
