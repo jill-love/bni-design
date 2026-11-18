@@ -69,15 +69,28 @@ The same random seed always gives the same design.
 | `swaps` | Written by the swap tool: date, failed pot, the spare that replaced it, the role it took over, note. |
 | `info` | The plan as entered, the seed and the version. A hidden `plan` tab holds the same as JSON, for the swap tool. |
 
-### Pot labels
+### Labels
 
-**Save workbook** also writes `labels_<workbook name>.zpl` beside the workbook: one 3 x 1 inch label per pot on the `jars` tab, for the Zebra ZD621.
+**Save workbook** also writes a folder of label files beside the workbook, `labels_<workbook name>/`, for the Zebra ZD621 (3 x 1 inch labels). Each file holds one kind of label, in the order the operators use them:
 
-- **QR code** of the pot's barcode at the left, the barcode in small text beneath it. The scanners read the QR code as the barcode, so the stations need no change.
-- **Black badge**: the cohort letter, and beneath it the pot's flood order in its planting group and cohort (`#11`, the flood sheet's order). A sacrificial pot says `SAC` (harvested on flood day, never flooded); a spare says `SPARE` (it has no cohort or treatment until it replaces a pot; write those on by hand, or reprint its label).
-- **Form**: the bench position (`T1-Z1-S1`), then PG (planting group), GENOTYPE and TREATMENT under small headings. A value too wide for its cell is printed smaller.
+| File | Labels | Order |
+|---|---|---|
+| `labels_PLANTING.zpl` | one per pot, spares included | planting group, then table, zone, slot |
+| `labels_HARVEST_SHOOT.zpl` | shoot bags | harvest date, then planting group and cohort, then flood order |
+| `labels_HARVEST_ROOT.zpl` | root bags | the same |
+| `labels_KCL_COLLECT.zpl` | KCl soil collection tubes | the same |
+| `labels_KCL_WEIGHED.zpl` | KCl weighed tubes | the same |
+| `labels_KCL_TIN.zpl` | soil water tins | the same |
+| `labels_KCL_EXTRACT.zpl` | KCl extract tubes | the same |
 
-To print, copy the file to the label computer and, in **Zebra Setup Utilities**, select the printer, **Open Communication With Printer**, **Open** the `.zpl` file, **Send to Printer**. Send one label first (from the first `^XA` to the first `^XZ`) to check its size and that it scans. A 203 dpi ZD621 needs `DPI = 203` in `labels.py`.
+The bag and tube files have one label per measured and sacrificial pot (spares are not harvested). A sacrificial pot is harvested on its flood day, in its harvest order; a measured pot after its cohort's last N2O sample.
+
+Every label has a QR code at the left with its text beneath it, a black badge and a small form:
+
+- **Pot label**: the QR code is the pot's barcode (what the stations scan). The badge has the cohort letter and the pot's flood order in its planting group and cohort (`#11`, the flood sheet's order); a sacrificial pot says `SAC` and its harvest order on flood day (`SAC 2`, its row on the flood sheet's sacrificial list; it is harvested, never flooded), a spare `SPARE` (it has no cohort or treatment until it replaces a pot: write those on by hand, or reprint its label). The form has the bench position (`T1-Z1-S1`), then PG (planting group), GENOTYPE and TREATMENT.
+- **Bag and tube labels**: the QR code is the pot's barcode plus `-SH` (shoot), `-RT` (root) or `-K1` to `-K4` (KCl collect, weighed, tin, extract), so every label has its own scan. The badge says what it is for: `SHOOT` / `ROOT`, `HARVEST` and the harvest date; or `KCl` and the step, with the harvest date on `COLLECT` only (the later steps are not done on harvest day). The form has the pot's barcode, then COHORT (with the flood order, or `SAC` and the harvest order), GENOTYPE and TREATMENT.
+
+A value too wide for its cell is printed smaller. To print, copy a file to the label computer and, in **Zebra Setup Utilities**, select the printer, **Open Communication With Printer**, **Open** the `.zpl` file, **Send to Printer**. Send one label first (from the first `^XA` to the first `^XZ`) to check its size and that it scans. A 203 dpi ZD621 needs `DPI = 203` in `labels.py`.
 
 ## The team file: who does what
 

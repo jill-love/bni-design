@@ -524,17 +524,18 @@ class DesignWindow(QtWidgets.QMainWindow):
                                                         "Excel workbook (*.xlsx)")
         if not path:
             return
-        zpl = labels.path_for(path)
+        folder = labels.folder_for(path)
         try:
             dx.write(self.design, path)
-            n = labels.write(self.design, zpl)
+            made = labels.write(self.design, folder)
         except PermissionError as e:
             QtWidgets.QMessageBox.warning(self, "Could not save",
                                           f"{e.filename or path} is open in another program. "
                                           f"Close it and save again.")
             return
         self._paint(GREEN, f"Saved {os.path.basename(path)}\n"
-                           f"+ {n} pot labels: {os.path.basename(zpl)}")
+                           f"+ {len(made)} label files ({sum(made.values())} labels) in "
+                           f"{os.path.basename(folder)}")
 
     def _dir(self):
         return os.path.dirname(self.plan_path) if self.plan_path else os.path.expanduser("~")
