@@ -25,8 +25,8 @@ Sheets
   asana_tasks  one row per task with its due date (Name, Due Date, Section/Column,
             Description): save as CSV and import into an Asana project. Every repeat is its
             own row. Due dates are formulas on the timeline, so they follow its edits.
-  jars      barcode + tag (tag ends with the Tn-Zn-nn position): the sheet the dosing
-            station's provisioning reads.
+  jars      barcode + tag (tag ends with the position as the station reads it, Tn-Zn-nn):
+            the sheet the dosing station's provisioning reads.
   admin     the dosing station's WFPS inputs (key in column A, value in B, note in C):
             with jars, the workbook is ready for the station's Start New Trial. Plain
             values only (the station refuses formulas); blank yellow cells still to fill.
@@ -764,7 +764,7 @@ def _jars(wb, d: dc.Design) -> None:
         c.font = BOLD; c.alignment = Alignment(horizontal="center")
     for p in d.pots:
         if p.active:                    # failed and discarded pots leave the station
-            ws.append([p.barcode, f"{p.label} {p.position}"])
+            ws.append([p.barcode, f"{p.label} {p.station_position}"])
     for row in ws.iter_rows(min_row=2, max_col=1):
         row[0].number_format = "@"                      # Text: keeps leading zeros
     _widths(ws, (16, 34))

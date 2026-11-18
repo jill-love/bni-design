@@ -220,7 +220,7 @@ def test_positions_are_unique_and_inside_the_bench():
     pos = [(p.table, p.zone, p.slot) for p in d.pots]
     assert len(set(pos)) == len(pos)
     assert all(1 <= t <= 6 and 1 <= z <= 5 and 1 <= s <= 12 for t, z, s in pos)
-    assert all(p.position == f"T{p.table}-Z{p.zone}-{p.slot:02d}" for p in d.pots)
+    assert all(p.position == f"T{p.table}-Z{p.zone}-S{p.slot}" for p in d.pots)
 
 
 def test_every_cell_and_group_is_spread_evenly_over_tables():
