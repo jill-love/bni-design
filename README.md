@@ -69,6 +69,12 @@ The same random seed always gives the same design.
 | `swaps` | Written by the swap tool: date, failed pot, the spare that replaced it, the role it took over, note. |
 | `info` | The plan as entered, the seed and the version. A hidden `plan` tab holds the same as JSON, for the swap tool. |
 
+### Pot labels
+
+**Save workbook** also writes `labels_<workbook name>.zpl` beside the workbook: one label per pot on the `jars` tab, for the Zebra ZD621. They are the dosing station's labels, exactly as **Start New Trial** writes them: the tag and position at the top left, the target mass at the top right, a Code 128 barcode and the barcode beneath, 300 dpi, 3 x 1 inch. The target mass is the station's WFPS calculation on the *Dosing station* values; while one is blank the labels are written without it (the banner says so).
+
+To print, copy the file to the label computer and, in **Zebra Setup Utilities**, select the printer, **Open Communication With Printer**, **Open** the `.zpl` file, **Send to Printer**. Send one label first (from the first `^XA` to the first `^XZ`) to check its size and that it scans. A 203 dpi ZD621 needs `DPI = 203` in `labels.py`.
+
 ## The team file: who does what
 
 `asana_team.xlsx`, beside the program, says who does each kind of task, so the Asana import comes with assignees and collaborators already filled in. It is never edited in the setup window.

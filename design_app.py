@@ -25,9 +25,11 @@ from PySide6.QtCore import Qt
 
 import design_core as dc
 import design_xlsx as dx
+import labels
 
 TITLE = f"BNI Experiment Setup v{dc.__version__}"
 SLATE, BLUE, GREEN, RED, MUTED = "#374151", "#1d4ed8", "#15803d", "#b91c1c", "#6b7280"
+AMBER = "#b45309"
 PLAN_COLS = ("Genotype", "Cohort", "Treatment", "Reps (measured)", "Sacrificial")
 BLANK_ROWS = 5             # the plan table always ends with this many empty rows
 
@@ -115,7 +117,7 @@ class DesignWindow(QtWidgets.QMainWindow):
 
         # ---- banner ----
         self.banner = QtWidgets.QLabel()
-        self.banner.setAlignment(Qt.AlignCenter)
+        self.banner.setAlignment(Qt.AlignCenter); self.banner.setWordWrap(True)
         self.banner.setFixedHeight(52)
         f = QtGui.QFont(); f.setPointSize(14); f.setBold(True); self.banner.setFont(f)
         v.addWidget(self.banner)
@@ -522,14 +524,21 @@ class DesignWindow(QtWidgets.QMainWindow):
                                                         "Excel workbook (*.xlsx)")
         if not path:
             return
+        zpl = labels.path_for(path)
         try:
             dx.write(self.design, path)
-        except PermissionError:
+            n, target = labels.write(self.design, zpl)
+        except PermissionError as e:
             QtWidgets.QMessageBox.warning(self, "Could not save",
-                                          f"{path} is open in another program. Close it and "
-                                          f"save again.")
+                                          f"{e.filename or path} is open in another program. "
+                                          f"Close it and save again.")
             return
-        self._paint(GREEN, f"Saved {os.path.basename(path)}")
+        saved = f"Saved {os.path.basename(path)} + {n} pot labels ({os.path.basename(zpl)})"
+        if target is None:
+            self._paint(AMBER, f"{saved}\nno target mass on the labels: dosing station "
+                               f"values are blank")
+        else:
+            self._paint(GREEN, f"{saved}\ntarget {target:.1f} g")
 
     def _dir(self):
         return os.path.dirname(self.plan_path) if self.plan_path else os.path.expanduser("~")
