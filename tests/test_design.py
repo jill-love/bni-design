@@ -1023,6 +1023,22 @@ def test_window_generates_from_the_example_plan():
     w.close()
 
 
+def test_window_delete_key_clears_selected_cells():
+    from PySide6 import QtCore, QtGui, QtWidgets
+    import design_app
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = design_app.DesignWindow()
+    t = w.table
+    assert t.text(0, 0)                                     # the example plan is filled in
+    for key in (QtCore.Qt.Key_Delete, QtCore.Qt.Key_Backspace):
+        t.set_text(0, 0, "B73"); t.set_text(0, 3, "5")
+        t.clearSelection(); t.setCurrentCell(0, 0)
+        t.item(0, 0).setSelected(True); t.item(0, 3).setSelected(True)
+        t.keyPressEvent(QtGui.QKeyEvent(QtCore.QEvent.KeyPress, key, QtCore.Qt.NoModifier))
+        assert t.text(0, 0) == "" and t.text(0, 3) == "", key
+    w.close()
+
+
 def test_window_paste_from_excel():
     from PySide6 import QtWidgets
     import design_app
