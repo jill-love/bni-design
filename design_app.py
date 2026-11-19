@@ -534,8 +534,8 @@ class DesignWindow(QtWidgets.QMainWindow):
                                           f"Close it and save again.")
             return
         self._paint(GREEN, f"Saved {os.path.basename(path)}\n"
-                           f"+ {len(made)} label files ({sum(made.values())} labels) in "
-                           f"{os.path.basename(folder)}")
+                           f"+ {sum(made.values())} pot labels in {os.path.basename(folder)} "
+                           f"(the swap tool makes the harvest and KCl labels)")
 
     def _dir(self):
         return os.path.dirname(self.plan_path) if self.plan_path else os.path.expanduser("~")

@@ -1,10 +1,17 @@
-"""Labels for a Zebra printer (ZD621, ZPL), written with the design map: one folder,
-labels_<workbook name>/, of seven files, each in the order its labels are used.
+"""Labels for a Zebra printer (ZD621, ZPL), each file in the order its labels are used.
+
+Save workbook (design_app.py) writes only the pot labels, to labels_<workbook name>/:
 
     labels_PLANTING.zpl        every pot (spares too): planting group, then position
-    labels_HARVEST_SHOOT.zpl   shoot bags  } every measured and sacrificial pot:
-    labels_HARVEST_ROOT.zpl    root bags   } harvest date, then planting group and
-    labels_KCL_COLLECT.zpl     } KCl       } cohort, then flood order (a sacrificial
+
+The swap tool (swaps.py) writes the rest, a planting group at a time, once the group's
+swaps are done and its spares used or discarded (its harvested pots are then final), to
+labels_<workbook name>_swaps_<date>/:
+
+    labels_RELABEL.zpl         a new pot label for each spare promoted that session
+    labels_HARVEST_SHOOT.zpl   shoot bags  } every measured and sacrificial pot of the
+    labels_HARVEST_ROOT.zpl    root bags   } group(s): harvest date, then planting group
+    labels_KCL_COLLECT.zpl     } KCl       } and cohort, then flood order (a sacrificial
     labels_KCL_WEIGHED.zpl     } tubes     } pot: its harvest order on flood day)
     labels_KCL_TIN.zpl         } and tin   }
     labels_KCL_EXTRACT.zpl     }           }
@@ -228,17 +235,19 @@ def zpl(d: dc.Design, dpi: int = DPI) -> str:
 RELABEL = "labels_RELABEL.zpl"
 
 
-def files(d: dc.Design, dpi: int = DPI, groups=None, relabel=None) -> dict[str, tuple[str, int]]:
-    """{file name: (ZPL, labels)}: the seven files. For a swap session, `groups` (the
-    planting groups swapped) and `relabel` (the promoted spares): a new pot label for
-    each promoted spare (labels_RELABEL.zpl, by position) instead of the planting file,
-    and those groups' bag and tube labels."""
-    if relabel is None:
-        out = {"labels_PLANTING.zpl": (zpl(d, dpi), len(pots(d)))}
-    else:
-        new = sorted(relabel, key=lambda p: (p.group, p.table, p.zone, p.slot))
-        out = {RELABEL: ("".join(zpl_label(p, dpi) for p in new), len(new))} if new else {}
-    hv = harvested(d, groups)
+def files(d: dc.Design, dpi: int = DPI, planting: bool = True, groups=(),
+          relabel=()) -> dict[str, tuple[str, int]]:
+    """{file name: (ZPL, labels)}: the planting file (`planting`), a new pot label for
+    each promoted spare in `relabel` (labels_RELABEL.zpl, by position), and the shoot,
+    root and KCl files of the planting groups in `groups` (only the swap tool asks for
+    these: a group's harvested pots are final once its swaps are done)."""
+    out = {}
+    if planting:
+        out["labels_PLANTING.zpl"] = (zpl(d, dpi), len(pots(d)))
+    new = sorted(relabel, key=lambda p: (p.group, p.table, p.zone, p.slot))
+    if new:
+        out[RELABEL] = ("".join(zpl_label(p, dpi) for p in new), len(new))
+    hv = harvested(d, set(groups)) if groups else []
     if not hv:
         return out
     for name, suffix, badge in SAMPLES:
@@ -264,13 +273,13 @@ def session_folder_for(workbook: str, day) -> str:
     return folder
 
 
-def write(d: dc.Design, folder: str, dpi: int = DPI, groups=None,
-          relabel=None) -> dict[str, int]:
+def write(d: dc.Design, folder: str, dpi: int = DPI, planting: bool = True, groups=(),
+          relabel=()) -> dict[str, int]:
     """Write the label files (see `files`) into `folder` (made if missing);
     {file name: labels}."""
     os.makedirs(folder, exist_ok=True)
     out = {}
-    for name, (text, n) in files(d, dpi, groups, relabel).items():
+    for name, (text, n) in files(d, dpi, planting, groups, relabel).items():
         with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
             f.write(text)
         out[name] = n

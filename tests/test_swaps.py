@@ -427,20 +427,20 @@ def _labels_dir(folder):
     return sorted(os.listdir(folder)) if folder else []
 
 
-def test_a_session_relabels_spares_and_prints_the_groups_it_finished(tmp_path):
+def test_a_session_relabels_spares_and_prints_the_groups_that_are_ready(tmp_path):
     import labels
     d, path = _late_map(tmp_path)                    # group 1 day 0, group 2 day 2
-    before, _ = S.read_design_map(path)
     f = _first(d, role=dc.MEASURED, group=1)
     spare = S.eligible_spares(d, f)[0]
     session = [S.swap(d, f.barcode, spare.barcode, DAY)]
-    first = min(S.planted(d, p) for p in d.pots)
-    S.discard_spares(d, dc.workday(first, 5))        # group 1's session: group 2 not due
-    S.rebuild(path, d, session)
-    lab = S.write_labels(path, before, d, session, DAY)
+    first = d.group_planting(1)
+    day = dc.workday(first, 5)                       # group 1's session: group 2 not due
+    S.discard_spares(d, day)
+    lab = S.save_session(path, d, session, session, day)
     assert lab["groups"] == [1] and lab["relabel"] == 1
     assert _labels_dir(lab["session"]) == sorted(
         [labels.RELABEL] + [f"labels_{n}.zpl" for n, _, _ in labels.SAMPLES])
+    assert [g for _, g, _ in S.label_log(path)] == [1]                  # logged in the map
     with open(os.path.join(lab["session"], labels.RELABEL)) as fh:
         z = fh.read()
     assert z.count("^XA") == 1 and f"^FDQA,{spare.barcode}^FS" in z
@@ -451,36 +451,50 @@ def test_a_session_relabels_spares_and_prints_the_groups_it_finished(tmp_path):
     assert shoot.count("^XA") == len(group1)
     assert f"{spare.barcode}-SH" in shoot and f"{f.barcode}-SH" not in shoot
     assert all(f"{p.barcode}-SH" not in shoot for p in d.pots if p.group == 2)
-    # the main folder follows the design map
+    # the map's own folder: the pot labels only, following the swap
+    assert _labels_dir(lab["main"]) == ["labels_PLANTING.zpl"]
     with open(os.path.join(lab["main"], "labels_PLANTING.zpl")) as fh:
         planting = fh.read()
     assert f"^FDQA,{f.barcode}^FS" not in planting
-    assert z.split("\n", 2)[2].split("^XZ")[0] in planting          # the spare's new label
+    new = z.split("^XZ")[0]
+    assert new in planting                                          # the spare's new label
 
 
-def test_a_session_with_spares_left_relabels_but_waits_to_print(tmp_path):
+def test_a_group_with_spares_left_waits_and_prints_once(tmp_path):
+    import labels
     d, path = _map(tmp_path)
-    before, _ = S.read_design_map(path)
     f = _first(d, role=dc.MEASURED)
     session = [S.swap(d, f.barcode, S.eligible_spares(d, f)[0].barcode, DAY)]
-    S.rebuild(path, d, session)
-    lab = S.write_labels(path, before, d, session, DAY)
-    assert lab["groups"] == [] and lab["relabel"] == 1
-    import labels
+    lab = S.save_session(path, d, session, session, DAY)
+    assert lab["groups"] == [] and lab["relabel"] == 1              # spares left: wait
     assert _labels_dir(lab["session"]) == [labels.RELABEL]
-    # the next session discards the rest: now the group's labels print, once
-    before, _ = S.read_design_map(path)
-    S.discard_spares(d, DAY)
-    S.rebuild(path, d, session)
-    lab2 = S.write_labels(path, before, d, [], DAY)
+    S.discard_spares(d, DAY)                                         # the rest go
+    lab2 = S.save_session(path, d, session, [], DAY)
     assert lab2["groups"] == [1] and lab2["relabel"] == 0 and lab2["session"] != lab["session"]
     assert labels.RELABEL not in _labels_dir(lab2["session"])
-    # and after that, a failure with no spare prints nothing new
-    before, _ = S.read_design_map(path)
-    late = [S.fail(d, _first(d, role=dc.MEASURED).barcode, DAY)]
-    S.rebuild(path, d, session + late)
-    lab3 = S.write_labels(path, before, d, late, DAY)
-    assert lab3["session"] is None and lab3["groups"] == []
+    late = [S.fail(d, _first(d, role=dc.MEASURED).barcode, DAY)]     # a failure after that
+    lab3 = S.save_session(path, d, session + late, late, DAY)
+    assert lab3["session"] is None and lab3["groups"] == []          # printed once only
+    assert [g for _, g, _ in S.label_log(path)] == [1]
+    assert [s.failed for s in S.read_design_map(path)[1]] == [f.barcode, late[0].failed]
+
+
+def test_a_group_without_spares_prints_on_its_swap_day(tmp_path):
+    d, path = _map(tmp_path, p0_plan(spares_per_genotype_per_group=0, spare_percent=0))
+    assert not [p for p in d.pots if p.role == dc.SPARE]
+    day = dc.workday(d.group_planting(1), 5)
+    assert S.ready_groups(d, day - dt.timedelta(days=1)) == set()   # not before its day
+    lab = S.save_session(path, d, [], [], day)
+    assert lab["groups"] == [1] and lab["relabel"] == 0
+    assert S.save_session(path, d, [], [], day)["session"] is None   # and only once
+
+
+def test_saving_the_workbook_writes_only_the_pot_labels(tmp_path):
+    import labels
+    d = dc.build(p0_plan(**SOIL))
+    book = str(tmp_path / "map.xlsx")
+    dx.write(d, book)
+    assert labels.write(d, labels.folder_for(book)) == {"labels_PLANTING.zpl": len(d.pots)}
 
 
 def test_window_fails_a_pot_with_no_spare_and_writes_the_labels(tmp_path):

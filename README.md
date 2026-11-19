@@ -71,19 +71,22 @@ The same random seed always gives the same design.
 
 ### Labels
 
-**Save workbook** also writes a folder of label files beside the workbook, `labels_<workbook name>/`, for the Zebra ZD621 (3 x 1 inch labels). Each file holds one kind of label, in the order the operators use them:
+Labels are for the Zebra ZD621 (3 x 1 inch). Each file holds one kind of label, in the order the operators use them.
 
-| File | Labels | Order |
-|---|---|---|
-| `labels_PLANTING.zpl` | one per pot, spares included: print before the first planting (Asana **Print pot labels**) | planting group, then table, zone, slot |
-| `labels_HARVEST_SHOOT.zpl` | shoot bags | harvest date, then planting group and cohort, then flood order |
-| `labels_HARVEST_ROOT.zpl` | root bags | the same |
-| `labels_KCL_COLLECT.zpl` | KCl soil collection tubes | the same |
-| `labels_KCL_WEIGHED.zpl` | KCl weighed tubes | the same |
-| `labels_KCL_TIN.zpl` | soil water tins | the same |
-| `labels_KCL_EXTRACT.zpl` | KCl extract tubes | the same |
+- **Save workbook** writes only the **pot labels**, to `labels_<workbook name>/labels_PLANTING.zpl`: one per pot, spares included, by planting group, then table, zone and slot. Print them before the first planting (Asana **Print pot labels**).
+- **The swap tool** writes everything else, a planting group at a time, once the group's swaps are done (see **Swaps**). No harvest or KCl label exists before then, so none can be stuck on a pot that later fails:
 
-The bag and tube files have one label per measured and sacrificial pot (spares are not harvested). They are printed at each planting group's swap session, from the session's label folder (see **Swaps**), when the pots to harvest are final; the files here are for reprints. A sacrificial pot is harvested on its flood day, in its harvest order; a measured pot after its cohort's last N2O sample.
+| File | Labels |
+|---|---|
+| `labels_RELABEL.zpl` | a new pot label for each spare promoted that session |
+| `labels_HARVEST_SHOOT.zpl` | shoot bags |
+| `labels_HARVEST_ROOT.zpl` | root bags |
+| `labels_KCL_COLLECT.zpl` | KCl soil collection tubes |
+| `labels_KCL_WEIGHED.zpl` | KCl weighed tubes |
+| `labels_KCL_TIN.zpl` | soil water tins |
+| `labels_KCL_EXTRACT.zpl` | KCl extract tubes |
+
+The bag and tube files have one label per measured and sacrificial pot of the group (spares are not harvested), by harvest date, then planting group and cohort, then flood order. A sacrificial pot is harvested on its flood day, in its harvest order; a measured pot after its cohort's last N2O sample.
 
 Every label has a QR code at the left with its text beneath it, a black badge and a small form:
 
@@ -123,9 +126,9 @@ Each planting group has one swap session, the Asana task **Run swaps**: 5 workin
 5. **Save design map.** The workbook is rebuilt from its own layout (never re-randomised): every tab follows, failed pots and discarded spares are struck through on the layout and leave `jars`, a promoted spare is bold with "(for Snnn)". Values typed into the flood, measure and harvest sheets (by barcode), edited yellow timeline inputs, admin values and tabs added by hand are kept. The old file is kept as `<name>_before_swaps_<date>.xlsx`.
 6. **Labels.** Save also writes this session's labels to `labels_<map>_swaps_<date>/`:
    - `labels_RELABEL.zpl`: a new pot label for each spare promoted in this session, with its new cohort, flood order and treatment. Scan the spare, then stick its new label over its `SPARE` label.
-   - the shoot, root and KCl label files of the planting group(s) this session **finished** (their last spare used or discarded): every pot that will be harvested, promoted spares in, failed pots out, in harvest order. Print them now. A group is printed once: a pot that fails later just leaves its labels unused.
+   - the shoot, root and KCl label files of every planting group that is **ready**: its swap day has come, its spares are all used or discarded, and its labels were not written before. Every pot that will be harvested, promoted spares in, failed pots out, in harvest order. Print them now. The design map's `label_log` tab records each group's, so they are written once: a pot that fails later just leaves its labels unused. A group with spares left waits for the session that discards them (the window says so); a group with no spares is ready on its swap day, and Save can be pressed with nothing else to do.
    
-   The design map's own `labels_<map>/` folder is refreshed too, so a reprint matches the map.
+   The pot labels in `labels_<map>/` are refreshed too, so a reprint matches the map.
 7. Remove the failed pots and the discarded spares from the bench.
 8. On the greenhouse PC, in the dosing station: pick the trial again in the **Trial** dropdown (it reloads the workbook: the failed and discarded pots are retired, the spares carry their new role), then **Load experiment orders** again. Do this between sessions, not in the middle of a flood.
 

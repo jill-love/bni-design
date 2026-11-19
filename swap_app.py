@@ -10,10 +10,11 @@ The design map is rebuilt with the spares in place (swaps.py): every tab follows
 typed into the workbook is kept, and the old file is kept as a dated backup. No barcode
 changes.
 
-Save also writes the labels: the design map's label folder is refreshed, and a folder of
-this session's labels holds a new pot label for each promoted spare (labels_RELABEL.zpl:
-it goes over the spare's SPARE label) and the bag and tube labels of every planting group
-the session finished (its last spare used or discarded).
+Save also writes the labels (the only place the harvest and KCl labels come from): a
+folder of this session's labels holds a new pot label for each promoted spare
+(labels_RELABEL.zpl: it goes over the spare's SPARE label) and the shoot, root and KCl
+labels of every planting group that is ready: its swap day has come, its spares are used
+or discarded, and its labels were not written before (the design map logs them).
 
 On the greenhouse PC, afterwards: in the dosing station pick the trial again in the Trial
 dropdown (it reloads the workbook) and Load experiment orders again.
@@ -72,7 +73,7 @@ class SwapWindow(QtWidgets.QMainWindow):
         self.spare.lineEdit().returnPressed.connect(self._add)
         fl.addRow("Spare that replaces it", self.spare)
         self.day = QtWidgets.QDateEdit(QtCore.QDate.currentDate()); self.day.setCalendarPopup(True)
-        self.day.dateChanged.connect(lambda _d: self.discard and (self._replay(), self._refresh()))
+        self.day.dateChanged.connect(self._day_changed)
         self.day.setDisplayFormat("ddd d MMM yyyy")
         fl.addRow("Date", self.day)
         self.note = QtWidgets.QLineEdit(); self.note.setPlaceholderText("optional, e.g. no germination")
@@ -134,6 +135,7 @@ class SwapWindow(QtWidgets.QMainWindow):
             return
         self.path, self.design, self.saved, self.pending = path, d, saved, []
         self.discard = False
+        self.printed = {g for _, g, _ in S.label_log(path)}
         self.discard_cb.blockSignals(True); self.discard_cb.setChecked(False)
         self.discard_cb.blockSignals(False)
         self.file_lbl.setText(path)
@@ -159,7 +161,9 @@ class SwapWindow(QtWidgets.QMainWindow):
         for w in (self.failed, self.spare, self.day, self.note, self.add_b, self.fail_b,
                   self.discard_cb):
             w.setEnabled(have)
-        self.save_b.setEnabled(have and bool(self.pending or self.discard))
+        ready = S.ready_groups(self.design, self.day.date().toPython(), self.printed) \
+            if have else set()
+        self.save_b.setEnabled(have and bool(self.pending or self.discard or ready))
         self.undo_b.setEnabled(bool(self.pending))
         rows = [(s, True) for s in self.saved] + [(s, False) for s in self.pending]
         self.table.setRowCount(len(rows))
@@ -184,11 +188,19 @@ class SwapWindow(QtWidgets.QMainWindow):
                     left[k] = left.get(k, 0) + 1
             many = self.design.groups > 1
             gone = sum(p.role == dc.DISCARDED and not p.swap for p in self.design.pots)
+            day = self.day.date().toPython()
+            waiting = sorted({gr for (_, gr) in left
+                              if day >= dc.workday(self.design.group_planting(gr),
+                                                   S.SPARE_WORKDAYS)})
             self.spares_lbl.setText("Spares left: " + (", ".join(
                 f"{g}{f' group {gr}' if many else ''}: {n}"
                 for (g, gr), n in sorted(left.items())) or "none")
                 + (f"   ({gone} discarded, {'with this save' if self.discard else 'before'})"
-                   if gone else ""))
+                   if gone else "")
+                + ("\nHarvest and KCl labels with this save: planting group "
+                   + ", ".join(map(str, sorted(ready))) if ready else "")
+                + ("\nPlanting group " + ", ".join(map(str, waiting)) + ": its harvest and "
+                   "KCl labels wait until its spares are used or discarded" if waiting else ""))
         else:
             self.spares_lbl.setText("")
 
@@ -268,6 +280,11 @@ class SwapWindow(QtWidgets.QMainWindow):
         self.pending = [s for k, s in enumerate(self.pending) if k not in idx]
         self._replay(); self._refresh()
 
+    def _day_changed(self, _d):
+        if self.discard:
+            self._replay()
+        self._refresh()
+
     def _toggle_discard(self, on):
         self.discard = on
         self._replay(); self._refresh()
@@ -280,10 +297,8 @@ class SwapWindow(QtWidgets.QMainWindow):
                                           "Close it there, then Save again.")
             return
         try:
-            before, _ = S.read_design_map(self.path)
-            rep = S.rebuild(self.path, self.design, self.saved + self.pending)
-            lab = S.write_labels(self.path, before, self.design, self.pending,
-                                 self.day.date().toPython())
+            lab = rep = S.save_session(self.path, self.design, self.saved + self.pending,
+                                       self.pending, self.day.date().toPython())
         except Exception as ex:
             QtWidgets.QMessageBox.critical(self, "Save failed", str(ex)); return
         n = len(self.pending)
