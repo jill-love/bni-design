@@ -70,6 +70,27 @@ def _box(x, y, w, h, t=None) -> str:
     return f"^FO{x},{y}^GB{w},{h},{t if t is not None else min(w, h)}^FS"
 
 
+# What prints well on the lab's ZD621, as tuned at the printer: everything 20 dots down
+# (^LH, the label home), the QR code at the top left at 7 dots a module, its text under it.
+HOME_Y = 20
+QR_AT = (41, 0)
+QR_MODULE = 7
+QR_TEXT_Y = 246
+
+
+def _start(X, Y) -> list[str]:
+    return [f"^XA^CI28^PW{X(900)}^LL{Y(300)}", f"^LH0,{Y(HOME_Y)}"]
+
+
+def _qr(X, Y, S, data: str) -> str:
+    return f"^FO{X(QR_AT[0])},{Y(QR_AT[1])}^BQN,2,{max(1, S(QR_MODULE))}^FD{QR_ECC}A,{data}^FS"
+
+
+def _end(out: list[str]) -> str:
+    """One command per line, as the label was tuned at the printer."""
+    return "\n".join(out + ["^XZ"]) + "\n"
+
+
 def zpl_label(p: dc.Pot, dpi: int = DPI, w_in: float = LABEL_IN[0],
               h_in: float = LABEL_IN[1]) -> str:
     """One pot's label. Laid out on a 900 x 300 grid (3 x 1 in at 300 dpi) and scaled to
@@ -78,13 +99,12 @@ def zpl_label(p: dc.Pot, dpi: int = DPI, w_in: float = LABEL_IN[0],
     X = lambda v: int(round(v * sx))
     Y = lambda v: int(round(v * sy))
     S = lambda v: max(1, int(round(v * min(sx, sy))))
-    out = [f"^XA^CI28^PW{X(900)}^LL{Y(300)}"]
+    out = _start(X, Y)
 
-    # QR code (8 dots a module at 300 dpi; ^BQ draws it a few dots below its ^FO)
-    mag = max(1, S(8))
-    out.append(f"^FO{X(30)},{Y(24)}^BQN,2,{mag}^FD{QR_ECC}A,{p.barcode}^FS")
-    out.append(_text(X(20), Y(226), S(_fit(p.barcode, 30, 188)), p.barcode, w=X(188),
-                     centre=True))
+    # QR code, its text under it (26 dots for BNI-P1-S107; smaller for a longer barcode)
+    out.append(_qr(X, Y, S, p.barcode))
+    out.append(_text(X(20), Y(QR_TEXT_Y), S(max(12, min(26, int(188 / (0.65 * len(p.barcode)))))),
+                     p.barcode, w=X(188), centre=True))
 
     # the badge: cohort letter and flood order, white on black
     bx, by, bw, bh = 230, 18, 190, 264
@@ -115,7 +135,7 @@ def zpl_label(p: dc.Pot, dpi: int = DPI, w_in: float = LABEL_IN[0],
         cx += w
         if i < len(cells) - 1:
             out.append(_box(X(cx - 12), Y(150), X(3), Y(132)))
-    return "".join(out) + "^XZ"
+    return _end(out)
 
 
 # --- bag and tube labels -----------------------------------------------------------
@@ -136,13 +156,12 @@ def sample_label(p: dc.Pot, suffix: str, badge: tuple, harvest, dpi: int = DPI,
     Y = lambda v: int(round(v * sy))
     S = lambda v: max(1, int(round(v * min(sx, sy))))
     code = f"{p.barcode}-{suffix}"
-    out = [f"^XA^CI28^PW{X(900)}^LL{Y(300)}"]
-    mag = max(1, S(7))                      # 7 dots a module: a version 2 code still fits
-    out.append(f"^FO{X(30)},{Y(24)}^BQN,2,{mag}^FD{QR_ECC}A,{code}^FS")
+    out = _start(X, Y)
+    out.append(_qr(X, Y, S, code))
     # the printer's hyphens are wide: allow 0.7 of the height a character, which Labelary
     # confirms fits (BNI-P1-S050-K4 at 22 dots on 220)
-    out.append(_text(X(6), Y(228), S(max(12, min(26, int(220 / (0.7 * len(code)))))), code,
-                     w=X(220), centre=True))
+    out.append(_text(X(6), Y(QR_TEXT_Y), S(max(12, min(26, int(220 / (0.7 * len(code)))))),
+                     code, w=X(220), centre=True))
 
     bx, by, bw, bh = 230, 18, 190, 264
     out.append(_box(X(bx), Y(by), X(bw), Y(bh), X(bw)))
@@ -170,7 +189,7 @@ def sample_label(p: dc.Pot, suffix: str, badge: tuple, harvest, dpi: int = DPI,
         cx += w
         if i < len(cells) - 1:
             out.append(_box(X(cx - 12), Y(150), X(3), Y(132)))
-    return "".join(out) + "^XZ"
+    return _end(out)
 
 
 # --- which pots, in which order ---------------------------------------------------------
