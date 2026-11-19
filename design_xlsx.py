@@ -859,6 +859,22 @@ def _swaps(wb, swaps: list) -> None:
     ws.freeze_panes = "A2"
 
 
+LABEL_LOG = "label_log"
+
+
+def _label_log(wb, log: list) -> None:
+    """Which planting groups' harvest and KCl labels the swap tool has written, when and
+    where (swaps.save_session): each group's are written once."""
+    ws = wb.create_sheet(LABEL_LOG)
+    _header(ws, 1, ["date", "planting_group", "label_folder"])
+    for r, (day, g, folder) in enumerate(log, 2):
+        for c, v in enumerate((day, g, folder), 1):
+            ws.cell(row=r, column=c, value=v)
+        ws.cell(row=r, column=1).number_format = "DD MMM YYYY"
+    _widths(ws, (13, 15, 48))
+    ws.freeze_panes = "A2"
+
+
 PLAN_SHEET = "plan"
 _CHUNK = 30000                  # an Excel cell holds 32767 characters
 
@@ -880,7 +896,8 @@ def _plan(wb, d: dc.Design) -> None:
 AUTO = object()                 # write(team=AUTO): the team file beside the program, if any
 
 
-def write(d: dc.Design, path: str, swaps: list | None = None, team=AUTO) -> None:
+def write(d: dc.Design, path: str, swaps: list | None = None, team=AUTO,
+          label_log: list | None = None) -> None:
     wb = Workbook()
     wb.remove(wb.active)
     refs = _timeline(wb, d)
@@ -898,6 +915,8 @@ def write(d: dc.Design, path: str, swaps: list | None = None, team=AUTO) -> None
     _admin(wb, d)
     if swaps:
         _swaps(wb, swaps)
+    if label_log:
+        _label_log(wb, label_log)
     _info(wb, d)
     _plan(wb, d)
     wb.save(path)

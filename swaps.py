@@ -33,7 +33,7 @@ import labels
 
 # tabs the program writes; anything else in a design map was added by hand and is copied
 GENERATED = {"timeline", "design", "layout", "tags", "groups", "asana_tasks", "jars",
-             "admin", "info", "swaps", dx.PLAN_SHEET, dx.ASSIGN_SHEET}
+             "admin", "info", "swaps", dx.PLAN_SHEET, dx.ASSIGN_SHEET, dx.LABEL_LOG}
 PER_COHORT = ("flood_", "measure_", "harvest_")
 
 
@@ -282,33 +282,52 @@ def discard_spares(d: dc.Design, on: dt.date | None = None) -> list[str]:
 
 
 # ======================================================================================
-# LABELS for a swap session
+# LABELS: a planting group's harvest and KCl labels, once its swaps are done
 # ======================================================================================
-def finished_groups(before: dc.Design, after: dc.Design) -> set[int]:
-    """Planting groups whose last unused spare was used or discarded in this session:
-    from now on their harvested pots are final, so their bag and tube labels can print."""
-    left = lambda d: {p.group for p in d.pots if p.role == dc.SPARE}
-    return left(before) - left(after)
-
-
-def write_labels(path: str, before: dc.Design, after: dc.Design, session: list[dc.Swap],
-                 day: dt.date) -> dict:
-    """After a swap session is saved: refresh the design map's label folder, and write a
-    folder of this session's labels: a new pot label for each spare promoted in it
-    (labels_RELABEL.zpl) and the bag and tube labels of the planting groups it finished.
-    Returns {"main", "session" (None when there is nothing to print), "relabel",
-    "groups", "files"}."""
-    main = labels.folder_for(path)
-    labels.write(after, main)
-    promoted = [pot(after, sw.spare) for sw in session if sw.spare]
-    groups = finished_groups(before, after)
-    out = {"main": main, "session": None, "relabel": len(promoted),
-           "groups": sorted(groups), "files": {}}
-    if promoted or groups:
-        folder = labels.session_folder_for(path, day)
-        out["session"] = folder
-        out["files"] = labels.write(after, folder, groups=groups or set(), relabel=promoted)
+def label_log(path: str) -> list[tuple]:
+    """[(date, planting group, label folder)]: the groups whose harvest and KCl labels
+    the swap tool has written (the design map's label_log tab)."""
+    wb = openpyxl.load_workbook(path, read_only=True)
+    if dx.LABEL_LOG not in wb.sheetnames:
+        return []
+    out = []
+    for r in list(wb[dx.LABEL_LOG].iter_rows(values_only=True))[1:]:
+        if r and r[1] is not None:
+            day = r[0].date() if isinstance(r[0], dt.datetime) else r[0]
+            out.append((day, int(r[1]), str(r[2] or "")))
     return out
+
+
+def ready_groups(d: dc.Design, day: dt.date, printed=()) -> set[int]:
+    """Planting groups whose harvest and KCl labels can be written on `day`: their swap
+    session is due (SPARE_WORKDAYS after planting), they have no unused spare left (so
+    their harvested pots are final), and theirs have not been written yet."""
+    left = {p.group for p in d.pots if p.role == dc.SPARE}
+    return {g for g in range(1, d.groups + 1)
+            if g not in printed and g not in left
+            and day >= dc.workday(d.group_planting(g), SPARE_WORKDAYS)}
+
+
+def save_session(path: str, d: dc.Design, swaps: list[dc.Swap], session: list[dc.Swap],
+                 day: dt.date) -> dict:
+    """Save a swap session: rebuild the design map (`swaps`: every swap so far, `session`:
+    this session's), refresh its pot labels (labels_<map>/), and write this session's
+    labels to labels_<map>_swaps_<date>/: a new pot label for each spare promoted
+    (labels_RELABEL.zpl) and the harvest and KCl labels of every group now ready
+    (ready_groups), which are logged so they are written once. Returns rebuild's report
+    plus {"main", "session" (None: nothing to print), "relabel", "groups", "files"}."""
+    log = label_log(path)
+    groups = ready_groups(d, day, {g for _, g, _ in log})
+    promoted = [pot(d, sw.spare) for sw in session if sw.spare]
+    folder = labels.session_folder_for(path, day) if (promoted or groups) else None
+    log += [(day, g, os.path.basename(folder)) for g in sorted(groups)]
+    rep = rebuild(path, d, swaps, log=log)
+    main = labels.folder_for(path)
+    labels.write(d, main)                                 # the pot labels, for reprints
+    files = (labels.write(d, folder, planting=False, groups=groups, relabel=promoted)
+             if folder else {})
+    return {**rep, "main": main, "session": folder, "relabel": len(promoted),
+            "groups": sorted(groups), "files": files}
 
 
 # ======================================================================================
@@ -406,7 +425,8 @@ def backup_path(path: str, now: dt.datetime | None = None) -> str:
     return f"{stem}_before_swaps_{(now or dt.datetime.now()):%Y-%m-%d_%H%M%S}{ext}"
 
 
-def rebuild(path: str, d: dc.Design, swaps: list[dc.Swap], out: str | None = None) -> dict:
+def rebuild(path: str, d: dc.Design, swaps: list[dc.Swap], out: str | None = None,
+            log: list | None = None) -> dict:
     """Write the design map for `d` (with its swaps) over `path` (or to `out`), carrying
     over what was typed into the old one, after copying the old one to a backup.
     Returns {"backup", "cells", "inputs", "sheets"}."""
@@ -417,7 +437,9 @@ def rebuild(path: str, d: dc.Design, swaps: list[dc.Swap], out: str | None = Non
         backup = backup_path(path)
         shutil.copy2(path, backup)
     tmp = out + ".tmp.xlsx"
-    dx.write(d, tmp, swaps=swaps)
+    if log is None:                       # keep the old map's label log
+        log = label_log(path)
+    dx.write(d, tmp, swaps=swaps, label_log=log)
     new_wb = openpyxl.load_workbook(tmp)
     report = _carry(old_wb, new_wb)
     new_wb.save(tmp)

@@ -148,19 +148,28 @@ def _qr(label):
     return re.search(r"\^BQN,2,\d+\^FDQA,(.*?)\^FS", label)[1]
 
 
-def test_seven_files_in_a_folder_beside_the_workbook(tmp_path):
+def test_the_workbook_folder_has_only_the_pot_labels(tmp_path):
+    """Harvest and KCl labels come only from the swap tool, once a group's swaps are
+    done: none are written with the workbook, so none can be stuck on in advance."""
     d = dc.build(p1_plan())
     book = tmp_path / "BNI-P1_design_map.xlsx"
     folder = LB.folder_for(str(book))
     assert folder == str(tmp_path / "labels_BNI-P1_design_map")
     made = LB.write(d, folder)
-    assert sorted(made) == sorted(FILES) and sorted(os.listdir(folder)) == sorted(FILES)
+    assert len(d.pots) == 144 and made == {"labels_PLANTING.zpl": 144}
+    assert os.listdir(folder) == ["labels_PLANTING.zpl"]
+
+
+def test_all_seven_kinds_for_chosen_groups():
+    d = dc.build(p1_plan())
+    fs = LB.files(d, groups=range(1, d.groups + 1))
+    assert sorted(fs) == sorted(FILES)
     harvested = sum(p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)
-    assert made["labels_PLANTING.zpl"] == len(d.pots) == 144          # spares too
-    assert all(made[f] == harvested == 126 for f in FILES[1:])        # no spares
-    for name in FILES:
-        with open(os.path.join(folder, name), encoding="utf-8") as fh:
-            assert fh.read().count("^XA") == made[name]
+    assert all(fs[f][1] == harvested == 126 for f in FILES[1:])        # no spares
+    one = LB.files(d, planting=False, groups={1})
+    assert "labels_PLANTING.zpl" not in one
+    assert all(n == sum(p.group == 1 and p.role in (dc.MEASURED, dc.SACRIFICIAL)
+                        for p in d.pots) for _, n in one.values())
 
 
 def test_planting_labels_go_by_planting_group_then_position():
@@ -174,7 +183,7 @@ def test_planting_labels_go_by_planting_group_then_position():
 def test_harvest_labels_go_by_harvest_date_then_flood_order():
     d = dc.build(p1_plan())
     by_code = {p.barcode: p for p in d.pots}
-    fs = LB.files(d)
+    fs = LB.files(d, groups=range(1, d.groups + 1))
     orders = {}
     for name, suffix in zip(FILES[1:], ("SH", "RT", "K1", "K2", "K3", "K4")):
         codes = [_qr(z) for z in _split(fs[name][0])]
@@ -194,7 +203,7 @@ def test_harvest_labels_go_by_harvest_date_then_flood_order():
 
 def test_bag_and_tube_badges():
     d = dc.build(p1_plan())
-    fs = LB.files(d)
+    fs = LB.files(d, groups=range(1, d.groups + 1))
     want = {"labels_HARVEST_SHOOT.zpl": ["SHOOT", "HARVEST", "date"],
             "labels_HARVEST_ROOT.zpl": ["ROOT", "HARVEST", "date"],
             "labels_KCL_COLLECT.zpl": ["KCl", "COLLECT", "date"],
@@ -218,7 +227,7 @@ def test_sacrificial_pots_are_numbered_by_harvest_order():
     """Each flood's sacrificial pots are SAC 1, SAC 2, ... in their harvest order on
     flood day, on the pot label and on every bag and tube label."""
     d = dc.build(p1_plan())
-    fs = LB.files(d)
+    fs = LB.files(d, groups=range(1, d.groups + 1))
     for g, c in d.cells():
         sac = sorted((p for p in d.pots if p.group == g and p.cohort == c.name
                       and p.role == dc.SACRIFICIAL), key=lambda p: p.seq)
@@ -252,6 +261,6 @@ def test_saving_the_workbook_writes_the_labels(tmp_path, monkeypatch):
                         staticmethod(lambda *a, **k: (book, "")))
     w._save_workbook()
     assert os.path.exists(book)
-    assert sorted(os.listdir(tmp_path / "labels_map")) == sorted(FILES)
-    assert "7 label files" in w.banner.text()
+    assert os.listdir(tmp_path / "labels_map") == ["labels_PLANTING.zpl"]
+    assert "pot labels" in w.banner.text() and "swap tool" in w.banner.text()
     w.close()
