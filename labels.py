@@ -209,12 +209,13 @@ def harvest_date(d: dc.Design, p: dc.Pot):
     return d.anchor_date(("n2o", p.group, c.name, c.last_offset))
 
 
-def harvested(d: dc.Design) -> list[dc.Pot]:
-    """The pots that are harvested (measured and sacrificial), in harvest order: date,
-    then planting group and cohort, then flood order (a sacrificial pot's: its harvest
-    order on flood day)."""
+def harvested(d: dc.Design, groups=None) -> list[dc.Pot]:
+    """The pots that are harvested (measured and sacrificial; of `groups` only, if
+    given), in harvest order: date, then planting group and cohort, then flood order (a
+    sacrificial pot's: its harvest order on flood day)."""
     names = [c.name for c in d.plan.cohorts]
-    return sorted((p for p in d.pots if p.active and p.role in (dc.MEASURED, dc.SACRIFICIAL)),
+    return sorted((p for p in d.pots if p.active and p.role in (dc.MEASURED, dc.SACRIFICIAL)
+                   and (groups is None or p.group in groups)),
                   key=lambda p: (harvest_date(d, p), p.group, names.index(p.cohort),
                                  p.role != dc.SACRIFICIAL, p.seq))
 
@@ -224,10 +225,22 @@ def zpl(d: dc.Design, dpi: int = DPI) -> str:
     return "".join(zpl_label(p, dpi) for p in pots(d))
 
 
-def files(d: dc.Design, dpi: int = DPI) -> dict[str, tuple[str, int]]:
-    """{file name: (ZPL, labels)} for the seven files."""
-    out = {"labels_PLANTING.zpl": (zpl(d, dpi), len(pots(d)))}
-    hv = harvested(d)
+RELABEL = "labels_RELABEL.zpl"
+
+
+def files(d: dc.Design, dpi: int = DPI, groups=None, relabel=None) -> dict[str, tuple[str, int]]:
+    """{file name: (ZPL, labels)}: the seven files. For a swap session, `groups` (the
+    planting groups swapped) and `relabel` (the promoted spares): a new pot label for
+    each promoted spare (labels_RELABEL.zpl, by position) instead of the planting file,
+    and those groups' bag and tube labels."""
+    if relabel is None:
+        out = {"labels_PLANTING.zpl": (zpl(d, dpi), len(pots(d)))}
+    else:
+        new = sorted(relabel, key=lambda p: (p.group, p.table, p.zone, p.slot))
+        out = {RELABEL: ("".join(zpl_label(p, dpi) for p in new), len(new))} if new else {}
+    hv = harvested(d, groups)
+    if not hv:
+        return out
     for name, suffix, badge in SAMPLES:
         out[f"labels_{name}.zpl"] = ("".join(sample_label(p, suffix, badge, harvest_date(d, p), dpi)
                                              for p in hv), len(hv))
@@ -240,11 +253,24 @@ def folder_for(workbook: str) -> str:
     return os.path.join(os.path.dirname(os.path.abspath(workbook)), f"labels_{stem}")
 
 
-def write(d: dc.Design, folder: str, dpi: int = DPI) -> dict[str, int]:
-    """Write the seven files into `folder` (made if missing); {file name: labels}."""
+def session_folder_for(workbook: str, day) -> str:
+    """labels_<workbook name>_swaps_<date>/ beside the workbook (_2, _3 ... when a second
+    session that day would overwrite one)."""
+    base = f"{folder_for(workbook)}_swaps_{day:%Y-%m-%d}"
+    folder, k = base, 1
+    while os.path.exists(folder):
+        k += 1
+        folder = f"{base}_{k}"
+    return folder
+
+
+def write(d: dc.Design, folder: str, dpi: int = DPI, groups=None,
+          relabel=None) -> dict[str, int]:
+    """Write the label files (see `files`) into `folder` (made if missing);
+    {file name: labels}."""
     os.makedirs(folder, exist_ok=True)
     out = {}
-    for name, (text, n) in files(d, dpi).items():
+    for name, (text, n) in files(d, dpi, groups, relabel).items():
         with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
             f.write(text)
         out[name] = n

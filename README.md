@@ -75,7 +75,7 @@ The same random seed always gives the same design.
 
 | File | Labels | Order |
 |---|---|---|
-| `labels_PLANTING.zpl` | one per pot, spares included | planting group, then table, zone, slot |
+| `labels_PLANTING.zpl` | one per pot, spares included: print before the first planting (Asana **Print pot labels**) | planting group, then table, zone, slot |
 | `labels_HARVEST_SHOOT.zpl` | shoot bags | harvest date, then planting group and cohort, then flood order |
 | `labels_HARVEST_ROOT.zpl` | root bags | the same |
 | `labels_KCL_COLLECT.zpl` | KCl soil collection tubes | the same |
@@ -83,7 +83,7 @@ The same random seed always gives the same design.
 | `labels_KCL_TIN.zpl` | soil water tins | the same |
 | `labels_KCL_EXTRACT.zpl` | KCl extract tubes | the same |
 
-The bag and tube files have one label per measured and sacrificial pot (spares are not harvested). A sacrificial pot is harvested on its flood day, in its harvest order; a measured pot after its cohort's last N2O sample.
+The bag and tube files have one label per measured and sacrificial pot (spares are not harvested). They are printed at each planting group's swap session, from the session's label folder (see **Swaps**), when the pots to harvest are final; the files here are for reprints. A sacrificial pot is harvested on its flood day, in its harvest order; a measured pot after its cohort's last N2O sample.
 
 Every label has a QR code at the left with its text beneath it, a black badge and a small form:
 
@@ -112,14 +112,22 @@ The plan can be saved and reopened (**Save plan / Open plan**, a `.json` file).
 
 ## Swaps: a spare replaces a failed pot
 
-When a pot fails, a spare of the **same genotype and planting group** takes over its role: cohort, treatment, rep, and its turn in the flood, N2O and harvest order. Neither pot moves and no barcode changes; write "promoted to <tag>" on the spare by hand.
+When a pot fails, a spare of the **same genotype and planting group** takes over its role: cohort, treatment, rep, and its turn in the flood, N2O and harvest order. Neither pot moves and no barcode changes. A pot that fails with no spare left simply leaves the experiment; its turn in the orders stays empty.
+
+Each planting group has one swap session, the Asana task **Run swaps**: 5 working days after it is planted, after its 5 germination checks (a Sunday planting's session is the Friday).
 
 1. Close the design map in Excel.
-2. Run `run_swaps.bat` (or `python swap_app.py`) and open the design map.
-3. Scan or type the failed pot; pick or scan the spare (only spares of its genotype planted the same day are offered, and any other is refused); **Add swap**. Repeat. A swap added by mistake can be removed until you save.
-4. Optional: tick **Discard unused spares planted at least a week before the date above** once all swaps are in. Spares of a later planting day are kept until their own week is up.
-5. **Save design map.** The workbook is rebuilt from its own layout (never re-randomised): every tab follows the swaps, failed pots and discarded spares are struck through on the layout and leave `jars`, the spare is bold with "(for Snnn)". Values typed into the flood, measure and harvest sheets (by barcode), edited yellow timeline inputs, admin values and tabs added by hand are kept. The old file is kept as `<name>_before_swaps_<date>.xlsx`.
-6. On the greenhouse PC, in the dosing station: pick the trial again in the **Trial** dropdown (it reloads the workbook: the failed and discarded pots are retired, the spares carry their new role), then **Load experiment orders** again. Do this between sessions, not in the middle of a flood.
+2. Run `run_swaps.bat` (or `python swap_app.py`) and open the design map. Set the date to today.
+3. Scan or type the failed pot; pick or scan the spare (only spares of its genotype planted the same day are offered, and any other is refused); **Add swap**. If no spare is left, **Failed, no spare**. Repeat. One added by mistake can be removed until you save.
+4. Tick **Discard unused spares of planting days that are due for swaps**: the spares of every planting day at least 5 working days before the date (this group's, and any earlier one's still left). A later planting day keeps its spares for its own session.
+5. **Save design map.** The workbook is rebuilt from its own layout (never re-randomised): every tab follows, failed pots and discarded spares are struck through on the layout and leave `jars`, a promoted spare is bold with "(for Snnn)". Values typed into the flood, measure and harvest sheets (by barcode), edited yellow timeline inputs, admin values and tabs added by hand are kept. The old file is kept as `<name>_before_swaps_<date>.xlsx`.
+6. **Labels.** Save also writes this session's labels to `labels_<map>_swaps_<date>/`:
+   - `labels_RELABEL.zpl`: a new pot label for each spare promoted in this session, with its new cohort, flood order and treatment. Scan the spare, then stick its new label over its `SPARE` label.
+   - the shoot, root and KCl label files of the planting group(s) this session **finished** (their last spare used or discarded): every pot that will be harvested, promoted spares in, failed pots out, in harvest order. Print them now. A group is printed once: a pot that fails later just leaves its labels unused.
+   
+   The design map's own `labels_<map>/` folder is refreshed too, so a reprint matches the map.
+7. Remove the failed pots and the discarded spares from the bench.
+8. On the greenhouse PC, in the dosing station: pick the trial again in the **Trial** dropdown (it reloads the workbook: the failed and discarded pots are retired, the spares carry their new role), then **Load experiment orders** again. Do this between sessions, not in the middle of a flood.
 
 ## Test it
 

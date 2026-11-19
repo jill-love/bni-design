@@ -4,11 +4,16 @@ swap_app.py: record failed pots and the spares that replace them (v0.1, 2026-11-
 
     python swap_app.py [design_map.xlsx]
 
-Open the experiment's design map, scan (or type) the failed pot, pick the spare, Add swap;
-repeat; optionally discard the spares that are left; Save. The design map is rebuilt with
-the spares in place (swaps.py): every tab follows, what was typed into the workbook is kept,
-and the old file is kept as a dated backup. No barcode changes: write "promoted to <tag>"
-on each spare by hand.
+Open the experiment's design map, scan (or type) the failed pot, pick the spare, Add swap
+(or Failed, no spare when none is left); repeat; discard the spares that are left; Save.
+The design map is rebuilt with the spares in place (swaps.py): every tab follows, what was
+typed into the workbook is kept, and the old file is kept as a dated backup. No barcode
+changes.
+
+Save also writes the labels: the design map's label folder is refreshed, and a folder of
+this session's labels holds a new pot label for each promoted spare (labels_RELABEL.zpl:
+it goes over the spare's SPARE label) and the bag and tube labels of every planting group
+the session finished (its last spare used or discarded).
 
 On the greenhouse PC, afterwards: in the dosing station pick the trial again in the Trial
 dropdown (it reloads the workbook) and Load experiment orders again.
@@ -73,7 +78,13 @@ class SwapWindow(QtWidgets.QMainWindow):
         self.note = QtWidgets.QLineEdit(); self.note.setPlaceholderText("optional, e.g. no germination")
         fl.addRow("Note", self.note)
         self.add_b = QtWidgets.QPushButton("Add swap"); self.add_b.clicked.connect(self._add)
-        fl.addRow("", self.add_b)
+        self.fail_b = QtWidgets.QPushButton("Failed, no spare")
+        self.fail_b.setToolTip("No spare can replace it: the pot leaves the experiment and "
+                               "its turn in the orders stays empty.")
+        self.fail_b.clicked.connect(self._fail)
+        btns = QtWidgets.QHBoxLayout(); btns.addWidget(self.add_b); btns.addWidget(self.fail_b)
+        btns.addStretch(1)
+        fl.addRow("", btns)
         v.addWidget(add)
 
         lg = QtWidgets.QGroupBox("Swaps"); ll = QtWidgets.QVBoxLayout(lg)
@@ -88,8 +99,11 @@ class SwapWindow(QtWidgets.QMainWindow):
         self.undo_b = QtWidgets.QPushButton("Remove selected (not saved yet)")
         self.undo_b.clicked.connect(self._remove)
         self.discard_cb = QtWidgets.QCheckBox(
-            "Discard unused spares planted at least a week before the date above")
-        self.discard_cb.setToolTip("Spares of a later planting day are kept for their own week.")
+            "Discard unused spares of planting days that are due for swaps (5 working days)")
+        self.discard_cb.setToolTip("Discards the spares of every planting day at least 5 "
+                                   "working days before the date above (its swap session). "
+                                   "Spares of a later planting day are kept for its own "
+                                   "session.")
         self.discard_cb.toggled.connect(self._toggle_discard)
         row.addWidget(self.undo_b); row.addStretch(1); row.addWidget(self.discard_cb)
         ll.addLayout(row)
@@ -131,7 +145,7 @@ class SwapWindow(QtWidgets.QMainWindow):
         """The design as saved plus the swaps added here (so one can be removed)."""
         d, _ = S.read_design_map(self.path)
         for sw in self.pending:
-            S.swap(d, sw.failed, sw.spare, sw.date, sw.note)
+            S.record(d, sw)
         if self.discard:
             S.discard_spares(d, self.day.date().toPython())
         self.design = d
@@ -142,7 +156,8 @@ class SwapWindow(QtWidgets.QMainWindow):
 
     def _refresh(self):
         have = self.design is not None
-        for w in (self.failed, self.spare, self.day, self.note, self.add_b, self.discard_cb):
+        for w in (self.failed, self.spare, self.day, self.note, self.add_b, self.fail_b,
+                  self.discard_cb):
             w.setEnabled(have)
         self.save_b.setEnabled(have and bool(self.pending or self.discard))
         self.undo_b.setEnabled(bool(self.pending))
@@ -153,7 +168,7 @@ class SwapWindow(QtWidgets.QMainWindow):
             if have:
                 f = next((p for p in self.design.pots if p.barcode == s.failed), None)
                 was = f.label.replace("-FAILED", "") if f else ""
-            vals = (f"{s.date:%d %b %Y}", s.failed, was, s.spare, s.role,
+            vals = (f"{s.date:%d %b %Y}", s.failed, was, s.spare or "(none)", s.role,
                     (s.note or "") + ("" if done else "   (not saved yet)"))
             for c, val in enumerate(vals):
                 it = QtWidgets.QTableWidgetItem(val)
@@ -231,6 +246,20 @@ class SwapWindow(QtWidgets.QMainWindow):
         self._refresh()
         self.failed.setFocus()
 
+    def _fail(self):
+        if self.design is None:
+            return
+        try:
+            sw = S.fail(self.design, self.failed.text(), self.day.date().toPython(),
+                        self.note.text().strip())
+        except S.SwapError as ex:
+            self._paint(RED, str(ex)); return
+        self.pending.append(sw)
+        self._paint(BLUE, f"{sw.failed} failed with no spare: Save when done")
+        self.failed.clear(); self.note.clear(); self.spare.clear(); self.failed_info.clear()
+        self._refresh()
+        self.failed.setFocus()
+
     def _remove(self):
         rows = sorted({i.row() for i in self.table.selectedIndexes()})
         idx = [r - len(self.saved) for r in rows if r >= len(self.saved)]
@@ -251,16 +280,31 @@ class SwapWindow(QtWidgets.QMainWindow):
                                           "Close it there, then Save again.")
             return
         try:
+            before, _ = S.read_design_map(self.path)
             rep = S.rebuild(self.path, self.design, self.saved + self.pending)
+            lab = S.write_labels(self.path, before, self.design, self.pending,
+                                 self.day.date().toPython())
         except Exception as ex:
             QtWidgets.QMessageBox.critical(self, "Save failed", str(ex)); return
         n = len(self.pending)
+        if lab["session"]:
+            many = len(lab["groups"]) > 1
+            labels_txt = (
+                f"Labels for this session are in\n{lab['session']}\n"
+                + (f"  - labels_RELABEL.zpl: {lab['relabel']} new pot label(s): stick each "
+                   f"over its spare's SPARE label (scan the spare first)\n" if lab["relabel"]
+                   else "")
+                + (f"  - shoot, root and KCl labels of planting group{'s' if many else ''} "
+                   f"{', '.join(map(str, lab['groups']))}: print them now\n"
+                   if lab["groups"] else ""))
+        else:
+            labels_txt = "No new labels to print this session.\n"
         QtWidgets.QMessageBox.information(self, "Saved", (
             f"{n} swap(s) saved" + (", unused spares discarded" if self.discard else "")
-            + f".\n\nBackup of the old file:\n{rep['backup']}\n\nKept from the old file: "
-            f"{rep['cells']} typed cell(s), {rep['inputs']} edited input(s)"
+            + f".\n\n{labels_txt}\nBackup of the old file:\n{rep['backup']}\n\nKept from "
+            f"the old file: {rep['cells']} typed cell(s), {rep['inputs']} edited input(s)"
             + (f", tabs {', '.join(rep['sheets'])}" if rep["sheets"] else "") + ".\n\n"
-            "On the greenhouse PC: write \"promoted to <tag>\" on each spare. In the dosing "
+            "Remove the failed pots and discarded spares from the bench. In the dosing "
             "station pick the trial again in the Trial dropdown, then Load experiment "
             "orders again."))
         self.load(self.path)

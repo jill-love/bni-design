@@ -29,6 +29,7 @@ import openpyxl
 
 import design_core as dc
 import design_xlsx as dx
+import labels
 
 # tabs the program writes; anything else in a design map was added by hand and is copied
 GENERATED = {"timeline", "design", "layout", "tags", "groups", "asana_tasks", "jars",
@@ -176,7 +177,7 @@ def read_design_map(path: str) -> tuple[dc.Design, list[dc.Swap]]:
             for r in sh.iter_rows(min_row=2, values_only=True):
                 if r and r[1]:
                     day = r[0].date() if isinstance(r[0], dt.datetime) else r[0]
-                    swaps.append(dc.Swap(day, str(r[1]), str(r[2]), str(r[3] or ""),
+                    swaps.append(dc.Swap(day, str(r[1]), str(r[2] or ""), str(r[3] or ""),
                                          str(r[4] or "")))
     return d, swaps
 
@@ -234,19 +235,79 @@ def swap(d: dc.Design, failed_bc: str, spare_bc: str, day: dt.date | None = None
     return dc.Swap(day or dt.date.today(), f.barcode, s.barcode, s.label, note)
 
 
-SPARE_WEEK = 7          # days a planting day's spares are kept before they may be discarded
+def fail(d: dc.Design, failed_bc: str, day: dt.date | None = None, note: str = "") -> dc.Swap:
+    """A failed pot with no spare to replace it: it becomes FAILED and leaves the
+    experiment (the station, the orders, the harvest labels); its turn in the flood,
+    N2O and harvest order is left empty. Changes `d` in place."""
+    f = pot(d, failed_bc)
+    if f.role == dc.FAILED:
+        raise SwapError(f"{f.barcode} has already failed")
+    if f.role not in (dc.MEASURED, dc.SACRIFICIAL):
+        raise SwapError(f"{f.barcode} is a {f.role.lower()} pot, not one in the experiment: "
+                        f"only a measured or sacrificial pot can fail")
+    label = f.label
+    f.was, f.role, f.swap = f.role, dc.FAILED, ""
+    f.load = f.column = f.seq = 0
+    return dc.Swap(day or dt.date.today(), f.barcode, "", "", note or f"no spare for {label}")
+
+
+def record(d: dc.Design, sw: dc.Swap) -> None:
+    """Apply a saved or pending swap again: with a spare, or a failure with none."""
+    if sw.spare:
+        swap(d, sw.failed, sw.spare, sw.date, sw.note)
+    else:
+        fail(d, sw.failed, sw.date, sw.note)
+
+
+# a planting day's spares are kept until its swap session: 5 working days after planting
+# (the "Run swaps" task, after the 5 germination checks), whatever weekday it was planted
+SPARE_WORKDAYS = dc.TASK_LAGS["swaps"]
+
+
+def spares_due(d: dc.Design, p: dc.Pot, on: dt.date) -> bool:
+    """`p`'s planting day has had its swap session by `on`."""
+    return on >= dc.workday(planted(d, p), SPARE_WORKDAYS)
 
 
 def discard_spares(d: dc.Design, on: dt.date | None = None) -> list[str]:
     """Unused spares become DISCARDED (no longer grown). With `on` (the day of the
-    swaps), only spares planted at least SPARE_WEEK days before it: a later planting
-    day keeps its spares for its own week. Returns the barcodes."""
+    swaps), only spares planted at least SPARE_WORKDAYS working days before it: a later
+    planting day keeps its spares until its own swap session. Returns the barcodes."""
     out = []
     for p in d.pots:
-        if p.role == dc.SPARE and (on is None
-                                   or (on - planted(d, p)).days >= SPARE_WEEK):
+        if p.role == dc.SPARE and (on is None or spares_due(d, p, on)):
             p.role = dc.DISCARDED
             out.append(p.barcode)
+    return out
+
+
+# ======================================================================================
+# LABELS for a swap session
+# ======================================================================================
+def finished_groups(before: dc.Design, after: dc.Design) -> set[int]:
+    """Planting groups whose last unused spare was used or discarded in this session:
+    from now on their harvested pots are final, so their bag and tube labels can print."""
+    left = lambda d: {p.group for p in d.pots if p.role == dc.SPARE}
+    return left(before) - left(after)
+
+
+def write_labels(path: str, before: dc.Design, after: dc.Design, session: list[dc.Swap],
+                 day: dt.date) -> dict:
+    """After a swap session is saved: refresh the design map's label folder, and write a
+    folder of this session's labels: a new pot label for each spare promoted in it
+    (labels_RELABEL.zpl) and the bag and tube labels of the planting groups it finished.
+    Returns {"main", "session" (None when there is nothing to print), "relabel",
+    "groups", "files"}."""
+    main = labels.folder_for(path)
+    labels.write(after, main)
+    promoted = [pot(after, sw.spare) for sw in session if sw.spare]
+    groups = finished_groups(before, after)
+    out = {"main": main, "session": None, "relabel": len(promoted),
+           "groups": sorted(groups), "files": {}}
+    if promoted or groups:
+        folder = labels.session_folder_for(path, day)
+        out["session"] = folder
+        out["files"] = labels.write(after, folder, groups=groups or set(), relabel=promoted)
     return out
 
 
