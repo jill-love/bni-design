@@ -29,7 +29,8 @@ COLLABORATORS = 2                # collaborator columns per role
 # Emails are left for the team file; kinds with no default are left blank.
 DEFAULT_PEOPLE = ["Jill", "Lina", "Sarah (Undergrad #1)", "Undergrad #2"]
 DEFAULT_ROLES = {
-    "kcl_setup": ("Lina", ()),
+    "print_harvest_labels": ("Jill", ()),
+    "apply_harvest_labels": ("Lina", ()),
     "prefill": ("Sarah (Undergrad #1)", ("Lina",)),
     "plant": ("Lina", ("Jill", "Sarah (Undergrad #1)")),
     "label_tables": ("Jill", ()),
