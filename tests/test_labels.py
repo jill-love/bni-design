@@ -34,6 +34,43 @@ def test_one_label_per_station_pot():
         assert {"POSITION", "PG", "GENOTYPE"} <= texts
 
 
+def test_pot_label_is_the_one_tuned_at_the_printer():
+    """Byte for byte the label the lab tuned on the ZD621 (pot S107): everything 20 dots
+    down (^LH), the QR code at 41,0 at 7 dots a module, its text at 246, one command a
+    line."""
+    p = dc.Pot(barcode="BNI-P1-S107", role=dc.MEASURED, genotype="B73", cohort="C",
+               treatment="INH", group=1, seq=5, table=1, zone=1, slot=3)
+    assert LB.zpl_label(p) == "\n".join([
+        "^XA^CI28^PW900^LL300",
+        "^LH0,20",
+        "^FO41,0^BQN,2,7^FDQA,BNI-P1-S107^FS",
+        "^FO20,246^FB188,1,0,C^A0N,26,26^FDBNI-P1-S107\\&^FS",
+        "^FO230,18^GB190,264,190^FS",
+        "^FO230,26^FB190,1,0,C^A0N,150,150^FR^FDC\\&^FS",
+        "^FO230,184^FB190,1,0,C^A0N,76,76^FR^FD#5\\&^FS",
+        "^FO442,14^A0N,26,26^FDPOSITION^FS",
+        "^FO442,44^A0N,86,86^FDT1-Z1-S3^FS",
+        "^FO442,140^GB444,3,3^FS",
+        "^FO442,152^A0N,24,24^FDPG^FS",
+        "^FO442,184^A0N,72,72^FD1^FS",
+        "^FO508,150^GB3,132,3^FS",
+        "^FO520,152^A0N,24,24^FDGENOTYPE^FS",
+        "^FO520,184^A0N,72,72^FDB73^FS",
+        "^FO720,150^GB3,132,3^FS",
+        "^FO732,152^A0N,24,24^FDTREATMENT^FS",
+        "^FO732,184^A0N,72,72^FDINH^FS",
+        "^XZ"]) + "\n"
+
+
+def test_bag_and_tube_labels_use_the_tuned_placement():
+    import datetime as dt
+    p = dc.build(p0_plan()).pots[0]
+    for _, suffix, badge in LB.SAMPLES:
+        z = LB.sample_label(p, suffix, badge, dt.date(2026, 12, 15))
+        assert z.startswith("^XA^CI28^PW900^LL300\n^LH0,20\n^FO41,0^BQN,2,7^FDQA,")
+        assert f"^FO6,246^FB220,1,0,C" in z and z.endswith("^XZ\n")
+
+
 def test_centred_text_ends_with_a_line_break():
     """Zebra printers only centre a field block's line when it ends with \\&."""
     p = dc.build(p0_plan()).pots[0]
@@ -104,7 +141,7 @@ FILES = ["labels_PLANTING.zpl", "labels_HARVEST_SHOOT.zpl", "labels_HARVEST_ROOT
 
 
 def _split(z):
-    return [x + "^XZ" for x in z.split("^XZ") if x]
+    return [x + "^XZ" for x in z.split("^XZ") if x.strip()]
 
 
 def _qr(label):
