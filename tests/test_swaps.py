@@ -385,3 +385,124 @@ def test_an_older_maps_planting_delays_are_not_taken_as_treatment_days(tmp_path)
     tl = openpyxl.load_workbook(path)["timeline"]
     assert tl.cell(top, 4).value == dx.TREAT_HEAD
     assert all(str(tl.cell(top + 1 + i, 4).value).startswith("=") for i in range(3))
+
+
+# ---------------------------------------------------------------- failed, no spare
+def test_a_failed_pot_with_no_spare_leaves_the_experiment(tmp_path):
+    d, path = _map(tmp_path)
+    f = _first(d, role=dc.MEASURED, cohort="A")
+    sw = S.fail(d, f.barcode, DAY, "no germination")
+    assert f.role == dc.FAILED and f.was == dc.MEASURED and not f.swap and not f.seq
+    assert sw.spare == "" and sw.failed == f.barcode
+    S.rebuild(path, d, [sw])
+    d2, sws = S.read_design_map(path)
+    assert [(s.failed, s.spare, s.note) for s in sws] == [(f.barcode, "", "no germination")]
+    assert S.pot(d2, f.barcode).role == dc.FAILED
+    wb = openpyxl.load_workbook(path)
+    assert f.barcode not in {r[0] for r in wb["jars"].iter_rows(values_only=True)}
+    import labels
+    assert f.barcode not in {p.barcode for p in labels.harvested(d2)}
+    with pytest.raises(S.SwapError, match="already failed"):
+        S.fail(d2, f.barcode)
+    with pytest.raises(S.SwapError, match="only a measured or sacrificial"):
+        S.fail(d2, _first(d2, role=dc.SPARE).barcode)
+
+
+# ---------------------------------------------------------------- spares: 5 working days
+@pytest.mark.parametrize("weekday", range(7))
+def test_spares_go_at_the_swap_session_whatever_day_they_were_planted(tmp_path, weekday):
+    """The 'Run swaps' task is 5 working days after planting: a Sunday planting's session
+    is the Friday, 5 days later, and its spares go then."""
+    plant = DAY - dt.timedelta(days=DAY.weekday()) + dt.timedelta(days=weekday)
+    d = dc.build(p0_plan(planting_date=plant, spares_per_genotype_per_group=2))
+    session = dc.workday(plant, 5)
+    task = next(t for t in d.tasks() if t.name.startswith("Run swaps"))
+    assert task.date == session
+    assert not S.discard_spares(d, session - dt.timedelta(days=1))
+    assert S.discard_spares(d, session) and not [p for p in d.pots if p.role == dc.SPARE]
+
+
+# ---------------------------------------------------------------- labels at a session
+def _labels_dir(folder):
+    return sorted(os.listdir(folder)) if folder else []
+
+
+def test_a_session_relabels_spares_and_prints_the_groups_it_finished(tmp_path):
+    import labels
+    d, path = _late_map(tmp_path)                    # group 1 day 0, group 2 day 2
+    before, _ = S.read_design_map(path)
+    f = _first(d, role=dc.MEASURED, group=1)
+    spare = S.eligible_spares(d, f)[0]
+    session = [S.swap(d, f.barcode, spare.barcode, DAY)]
+    first = min(S.planted(d, p) for p in d.pots)
+    S.discard_spares(d, dc.workday(first, 5))        # group 1's session: group 2 not due
+    S.rebuild(path, d, session)
+    lab = S.write_labels(path, before, d, session, DAY)
+    assert lab["groups"] == [1] and lab["relabel"] == 1
+    assert _labels_dir(lab["session"]) == sorted(
+        [labels.RELABEL] + [f"labels_{n}.zpl" for n, _, _ in labels.SAMPLES])
+    with open(os.path.join(lab["session"], labels.RELABEL)) as fh:
+        z = fh.read()
+    assert z.count("^XA") == 1 and f"^FDQA,{spare.barcode}^FS" in z
+    assert f"^FD{f.cohort}\\&^FS" in z and f"^FD#{spare.seq}\\&^FS" in z   # its new role
+    with open(os.path.join(lab["session"], "labels_HARVEST_SHOOT.zpl")) as fh:
+        shoot = fh.read()
+    group1 = [p for p in labels.harvested(d) if p.group == 1]
+    assert shoot.count("^XA") == len(group1)
+    assert f"{spare.barcode}-SH" in shoot and f"{f.barcode}-SH" not in shoot
+    assert all(f"{p.barcode}-SH" not in shoot for p in d.pots if p.group == 2)
+    # the main folder follows the design map
+    with open(os.path.join(lab["main"], "labels_PLANTING.zpl")) as fh:
+        planting = fh.read()
+    assert f"^FDQA,{f.barcode}^FS" not in planting
+    assert z.split("\n", 2)[2].split("^XZ")[0] in planting          # the spare's new label
+
+
+def test_a_session_with_spares_left_relabels_but_waits_to_print(tmp_path):
+    d, path = _map(tmp_path)
+    before, _ = S.read_design_map(path)
+    f = _first(d, role=dc.MEASURED)
+    session = [S.swap(d, f.barcode, S.eligible_spares(d, f)[0].barcode, DAY)]
+    S.rebuild(path, d, session)
+    lab = S.write_labels(path, before, d, session, DAY)
+    assert lab["groups"] == [] and lab["relabel"] == 1
+    import labels
+    assert _labels_dir(lab["session"]) == [labels.RELABEL]
+    # the next session discards the rest: now the group's labels print, once
+    before, _ = S.read_design_map(path)
+    S.discard_spares(d, DAY)
+    S.rebuild(path, d, session)
+    lab2 = S.write_labels(path, before, d, [], DAY)
+    assert lab2["groups"] == [1] and lab2["relabel"] == 0 and lab2["session"] != lab["session"]
+    assert labels.RELABEL not in _labels_dir(lab2["session"])
+    # and after that, a failure with no spare prints nothing new
+    before, _ = S.read_design_map(path)
+    late = [S.fail(d, _first(d, role=dc.MEASURED).barcode, DAY)]
+    S.rebuild(path, d, session + late)
+    lab3 = S.write_labels(path, before, d, late, DAY)
+    assert lab3["session"] is None and lab3["groups"] == []
+
+
+def test_window_fails_a_pot_with_no_spare_and_writes_the_labels(tmp_path):
+    from PySide6 import QtWidgets
+    import swap_app
+    d, path = _map(tmp_path)
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    w = swap_app.SwapWindow(path)
+    w.day.setDate(DAY)
+    f1, f2 = [p for p in w.design.pots if p.role == dc.MEASURED][:2]
+    w.failed.setText(f1.barcode); w._failed_entered(focus=True)
+    w.spare.setCurrentIndex(0); w._add()
+    w.failed.setText(f2.barcode); w._fail()
+    assert [s.spare == "" for s in w.pending] == [False, True]
+    assert w.table.item(1, 3).text() == "(none)"
+    w.discard_cb.setChecked(True)
+    said = []
+    QtWidgets.QMessageBox.information = lambda *a, **k: said.append(a[2])
+    w._save()
+    roles = {p.barcode: p.role for p in S.read_design_map(path)[0].pots}
+    assert roles[f1.barcode] == roles[f2.barcode] == dc.FAILED
+    assert dc.SPARE not in roles.values()
+    assert "labels_RELABEL.zpl: 1 new pot label" in said[0] and "planting group 1" in said[0]
+    assert any(n.startswith("map_swaps_") or "_swaps_" in n for n in os.listdir(tmp_path))
+    w.close()

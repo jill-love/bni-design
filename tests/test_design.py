@@ -382,7 +382,7 @@ def test_every_task_kind_is_listed_once_per_repeat():
     assert [x.date for x in t] == sorted(x.date for x in t)
     one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments",
                 "KCl soil collection setup", "Run swaps", "Prep KCl extracts for shipping",
-                "Make the treatment solutions", "Print all labels")
+                "Make the treatment solutions", "Print pot labels")
     for start in one_each:
         assert len(_named(t, start)) == 1, start
     per_cohort = ("Flood - ", "Wash pots")
@@ -453,19 +453,27 @@ def test_kcl_batches_fill_in_harvest_order():
     assert split == [name for name, _ in b[1]][0] == "B final"
 
 
-def test_all_labels_are_printed_once_before_the_first_planting():
+def test_pot_labels_are_printed_before_the_first_planting():
     for plan in (p0_plan(spares_per_genotype_per_group=2), big_plan(), late_plan()):
         d = dc.build(plan)
         t = d.tasks()
-        lab = _named(t, "Print all labels")
+        lab = _named(t, "Print pot labels")
         assert len(lab) == 1 and lab[0].section == "Setup" and lab[0].kind == "print_labels"
         first = min(d.group_planting(g) for g in range(1, d.groups + 1))
         assert lab[0].date == dc.workday(first, -1)
-        pots = len(d.pots)
-        plants = sum(p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)
-        assert lab[0].notes.startswith(f"{pots + 2 * plants + 4 * plants} labels: ")
-        assert f"pots {pots} " in lab[0].notes and f"biomass bags {2 * plants} " in lab[0].notes
-        assert f"KCl {4 * plants} " in lab[0].notes
+        assert lab[0].notes.startswith(f"{len(d.pots)} labels (labels_PLANTING.zpl")
+
+
+def test_each_swap_session_relabels_and_prints_its_groups_harvest_labels():
+    for plan in (p0_plan(spares_per_genotype_per_group=2), big_plan(), late_plan()):
+        d = dc.build(plan)
+        swaps = _named(d.tasks(), "Run swaps")
+        assert len(swaps) == d.groups
+        for task in swaps:
+            g = task.anchor[1]
+            hv = sum(p.group == g and p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)
+            assert "labels_RELABEL.zpl" in task.notes and "Discard unused spares" in task.notes
+            assert f"bags, {2 * hv};" in task.notes and f"tins, {4 * hv})" in task.notes
 
 
 def test_kcl_tubes_are_prepared_once_with_the_setup():

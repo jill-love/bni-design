@@ -83,7 +83,7 @@ GONE = (FAILED, DISCARDED)
 # (Excel's WORKDAY, so the workbook recalculates them). Negative = before.
 TASK_LAGS = {
     "prefill": -1,          # pre-fill pots: the working day before planting
-    "print_labels": -1,     # every label, one session: the working day before the first planting
+    "print_labels": -1,     # the pot labels: the working day before the first planting
     "kcl_setup": -1,        # every KCl tube, one session: the working day before the
                             # experiment's first planting, with the other setup
     "swaps": 5,             # run the swap tool: a week (5 working days) after each planting
@@ -95,13 +95,13 @@ TASK_LAGS = {
 }
 # Every kind of task, in the order the team file (team.py) lists them: key -> what it is.
 TASK_KINDS = {
-    "print_labels": "Print all labels (pots, biomass bags, KCl tubes and tins)",
+    "print_labels": "Print pot labels",
     "kcl_setup": "KCl soil collection setup (supplies, printing & labeling tubes)",
     "prefill": "Pre-fill pots with weighed soil",
     "plant": "Label pots, plant seed, and initial wet-up",
     "label_tables": "Label tables with treatment and group information",
     "germination": "Check ZeaL germination",
-    "swaps": "Run swaps (failed pots, unused spares)",
+    "swaps": "Run swaps (failed pots, unused spares), relabel, print harvest labels",
     "watering": "Maintenance watering",
     "make_treatments": "Make the treatment solutions",
     "treatment": "Apply treatments",
@@ -968,10 +968,17 @@ class Design:
                     add(at, k, f"If using ZeaL genotypes, check for germination{sfx}",
                         "Planting", f"check {k} of {GERMINATION_WORKDAYS}", "germination")
                 nsp = sum(p.group == g and p.role == SPARE for p in self.pots)
+                hv = sum(p.group == g and p.role in (MEASURED, SACRIFICIAL) for p in self.pots)
+                k = LABEL_COPIES
                 add(at, lag["swaps"], f"Run swaps: replace failed pots with spares, discard "
                     f"unused spares{sfx}", "Planting",
-                    f"swap tool (run_swaps.bat) on the design map, then reload the trial in "
-                    f"the dosing station; {nsp} spare(s) planted that day", "swaps")
+                    f"swap tool (run_swaps.bat) on the design map: add the swaps, tick "
+                    f"Discard unused spares, Save; {nsp} spare(s) planted that day. Then, from "
+                    f"the session's label folder: stick each labels_RELABEL.zpl label over its "
+                    f"promoted spare's SPARE label, and print the group's harvest labels "
+                    f"(shoot and root bags, {k['biomass_bag'] * hv}; KCl tubes and tins, "
+                    f"{k['kcl'] * hv}). Remove the failed pots and discarded spares, then "
+                    f"reload the trial in the dosing station", "swaps")
                 # one task per treatment day: cohorts treated on different days (a
                 # treatment time trial) get their own, named
                 by_day = {}
@@ -1023,18 +1030,15 @@ class Design:
                 "Make the treatment solutions", "Treatment",
                 "for " + ", ".join(f"{t} ({n[t]} pots)" for t in trts)
                 + f"; applied {when}", "make_treatments")
-        # every label of the experiment, printed in one session with the setup
+        # the pot labels, every one in one session with the setup; the bag and tube labels
+        # follow each planting group's swap session (when its harvested pots are final)
         first = self.planting_days(1)[0][1][0]
         pots = sum(1 for p in self.pots)
-        plants = sum(p.role in (MEASURED, SACRIFICIAL) for p in self.pots)
         k = LABEL_COPIES
-        n = {"pot": pots * k["pot"], "biomass_bag": plants * k["biomass_bag"],
-             "kcl": plants * k["kcl"]}
-        add(("plant", 1, first), lag["print_labels"], "Print all labels", "Setup",
-            f"{sum(n.values())} labels: pots {n['pot']} ({k['pot']} x {pots}), biomass bags "
-            f"{n['biomass_bag']} ({k['biomass_bag']} x {plants}: shoot and root), KCl "
-            f"{n['kcl']} ({k['kcl']} x {plants}: collection tube, weighed tube, soil water "
-            f"tin, extract tube)", "print_labels")
+        add(("plant", 1, first), lag["print_labels"], "Print pot labels", "Setup",
+            f"{pots * k['pot']} labels (labels_PLANTING.zpl, spares included). The shoot, "
+            f"root and KCl labels are printed at each planting group's swap session",
+            "print_labels")
         # KCl tubes for every soil sample, prepared in one session with the other setup
         hv = self.harvests()
         if hv:
