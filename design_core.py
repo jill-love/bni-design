@@ -84,9 +84,8 @@ GONE = (FAILED, DISCARDED)
 TASK_LAGS = {
     "prefill": -1,          # pre-fill pots: the working day before planting
     "print_labels": -1,     # the pot labels: the working day before the first planting
-    "kcl_setup": -1,        # every KCl tube, one session: the working day before the
-                            # experiment's first planting, with the other setup
-    "swaps": 5,             # run the swap tool: a week (5 working days) after each planting
+    "swaps": 5,             # run the swap tool: a week (5 working days) after each planting;
+                            # the group's harvest labels are printed and put on the same day
     "make_treatments": -1,  # make the treatments: the working day before the first treatment
     "kcl_extract": 1,       # KCl batch 1: the working day after the LAST harvest; batch k: k
     "kcl_ship": 1,          # prep the extracts for shipping: the working day after the last batch
@@ -96,12 +95,13 @@ TASK_LAGS = {
 # Every kind of task, in the order the team file (team.py) lists them: key -> what it is.
 TASK_KINDS = {
     "print_labels": "Print pot labels",
-    "kcl_setup": "KCl soil collection setup (supplies, printing & labeling tubes)",
     "prefill": "Pre-fill pots with weighed soil",
     "plant": "Label pots, plant seed, and initial wet-up",
     "label_tables": "Label tables with treatment and group information",
     "germination": "Check ZeaL germination",
-    "swaps": "Run swaps (failed pots, unused spares), relabel, print harvest labels",
+    "swaps": "Run swaps (failed pots, unused spares) and relabel promoted spares",
+    "print_harvest_labels": "Print a planting group's shoot, root and KCl labels",
+    "apply_harvest_labels": "Label the KCl collection tubes and shoot and root bags",
     "watering": "Maintenance watering",
     "make_treatments": "Make the treatment solutions",
     "treatment": "Apply treatments",
@@ -786,6 +786,8 @@ class Task:
     anchor: tuple = ()
     lag: int | None = None
     kind: str = ""                 # TASK_KINDS key: who does it (the team file's roles)
+    step: int = 0                  # order among a day's tasks of one section (swaps, then
+                                   # print the labels, then put them on)
 
 
 # ======================================================================================
@@ -947,10 +949,10 @@ class Design:
         many = self.groups > 1
         who = lambda g, c: f"cohort {c}" + (f", group {g}" if many else "")
 
-        def add(anchor, n, name, section, notes="", kind=""):
+        def add(anchor, n, name, section, notes="", kind="", step=0):
             day = self.anchor_date(anchor)
             day = day if n is None else workday(day, n)
-            out.append(Task(day, name, section, notes, anchor, n, kind))
+            out.append(Task(day, name, section, notes, anchor, n, kind, step))
 
         for g in range(1, self.groups + 1):
             for day, cs in self.planting_days(g):       # one planting date per group
@@ -973,12 +975,24 @@ class Design:
                 add(at, lag["swaps"], f"Run swaps: replace failed pots with spares, discard "
                     f"unused spares{sfx}", "Planting",
                     f"swap tool (run_swaps.bat) on the design map: add the swaps, tick "
-                    f"Discard unused spares, Save; {nsp} spare(s) planted that day. Then, from "
-                    f"the session's label folder: stick each labels_RELABEL.zpl label over its "
-                    f"promoted spare's SPARE label, and print the group's harvest labels "
-                    f"(shoot and root bags, {k['biomass_bag'] * hv}; KCl tubes and tins, "
-                    f"{k['kcl'] * hv}). Remove the failed pots and discarded spares, then "
-                    f"reload the trial in the dosing station", "swaps")
+                    f"Discard unused spares, Save; {nsp} spare(s) planted that day. Stick each "
+                    f"label of the session's labels_RELABEL.zpl over its promoted spare's "
+                    f"SPARE label; remove the failed pots and discarded spares; reload the "
+                    f"trial in the dosing station", "swaps", step=0)
+                # the group's harvest and KCl labels exist once its swaps are saved
+                # (about one per pot to harvest: a failed pot with no spare has none)
+                add(at, lag["swaps"], f"Print harvest and KCl labels{sfx}", "Planting",
+                    f"from the swap session's label folder (labels_<map>_swaps_<date>): "
+                    f"labels_HARVEST_SHOOT.zpl and labels_HARVEST_ROOT.zpl "
+                    f"({k['biomass_bag'] * hv} bag labels), labels_KCL_COLLECT, _WEIGHED, "
+                    f"_TIN and _EXTRACT.zpl ({k['kcl'] * hv} KCl labels), about {hv} of each",
+                    "print_harvest_labels", step=1)
+                add(at, lag["swaps"], f"Label KCl collection tubes and shoot and root "
+                    f"bags{sfx}", "Planting",
+                    f"{hv} KCl collection tubes and {k['biomass_bag'] * hv} bags (a shoot and "
+                    f"a root bag per pot to harvest), in harvest order. Keep the weighed "
+                    f"tube, soil water tin and extract tube labels for the KCl extractions",
+                    "apply_harvest_labels", step=2)
                 # one task per treatment day: cohorts treated on different days (a
                 # treatment time trial) get their own, named
                 by_day = {}
@@ -1039,17 +1053,6 @@ class Design:
             f"{pots * k['pot']} labels (labels_PLANTING.zpl, spares included). The shoot, "
             f"root and KCl labels are printed at each planting group's swap session",
             "print_labels")
-        # KCl tubes for every soil sample, prepared in one session with the other setup
-        hv = self.harvests()
-        if hv:
-            first = self.planting_days(1)[0][1][0]
-            per = Counter()
-            for _, name, n in hv:
-                per[name.split(" ")[0]] += n
-            add(("plant", 1, first), lag["kcl_setup"],
-                "KCl soil collection setup (gathering supplies, printing & labeling tubes)",
-                "Setup", f"{sum(per.values())} tubes, every harvest of the experiment: "
-                + ", ".join(f"{k} {v}" for k, v in per.items()), "kcl_setup")
         # KCl: the soil samples wait until the last harvest, then go in a few equal batches
         # on consecutive working days; the extracts are prepped for shipping the day after
         batches = self.kcl_batches()
@@ -1070,7 +1073,7 @@ class Design:
                 "watering")
         order = {"Setup": 0, "Planting": 1, "Watering": 2, "Treatment": 3, "KCl": 4,
                  "Harvest": 5, "N2O": 6, "Cleanup": 7}
-        out.sort(key=lambda t: (t.date, order.get(t.section, 9), t.name))
+        out.sort(key=lambda t: (t.date, order.get(t.section, 9), t.step, t.name))
         return out
 
     def calendar_load(self) -> dict[dt.date, int]:

@@ -381,7 +381,8 @@ def test_every_task_kind_is_listed_once_per_repeat():
     t = d.tasks()
     assert [x.date for x in t] == sorted(x.date for x in t)
     one_each = ("Pre-fill pots", "Label, plant seed", "Label tables", "Apply treatments",
-                "KCl soil collection setup", "Run swaps", "Prep KCl extracts for shipping",
+                "Print harvest and KCl labels", "Label KCl collection tubes", "Run swaps",
+                "Prep KCl extracts for shipping",
                 "Make the treatment solutions", "Print pot labels")
     for start in one_each:
         assert len(_named(t, start)) == 1, start
@@ -464,29 +465,44 @@ def test_pot_labels_are_printed_before_the_first_planting():
         assert lab[0].notes.startswith(f"{len(d.pots)} labels (labels_PLANTING.zpl")
 
 
-def test_each_swap_session_relabels_and_prints_its_groups_harvest_labels():
+def test_each_swap_session_relabels_its_promoted_spares():
     for plan in (p0_plan(spares_per_genotype_per_group=2), big_plan(), late_plan()):
         d = dc.build(plan)
         swaps = _named(d.tasks(), "Run swaps")
         assert len(swaps) == d.groups
         for task in swaps:
-            g = task.anchor[1]
-            hv = sum(p.group == g and p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)
             assert "labels_RELABEL.zpl" in task.notes and "Discard unused spares" in task.notes
-            assert f"bags, {2 * hv};" in task.notes and f"tins, {4 * hv})" in task.notes
 
 
-def test_kcl_tubes_are_prepared_once_with_the_setup():
+def test_harvest_labels_are_printed_and_put_on_at_each_swap_session():
+    """No KCl setup before the experiment: each planting group's harvest and KCl labels
+    are printed (Jill) and the collection tubes and bags labelled (Lina) on its swap
+    day, after the swaps, in that order."""
     for plan in (p0_plan(), big_plan(), late_plan()):
         d = dc.build(plan)
         t = d.tasks()
-        setup = _named(t, "KCl soil collection setup")
-        prefill = _named(t, "Pre-fill pots")
-        assert len(setup) == 1 and setup[0].section == "Setup"
-        assert setup[0].date == min(x.date for x in prefill)        # with the first setup
-        assert setup[0].date < min(day for day, _, _ in d.harvests())
-        assert setup[0].notes.startswith(
-            f"{sum(p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)} tubes")
+        assert not _named(t, "KCl soil collection setup")
+        swaps = _named(t, "Run swaps")
+        prints = _named(t, "Print harvest and KCl labels")
+        puts = _named(t, "Label KCl collection tubes")
+        assert len(swaps) == len(prints) == len(puts) == d.groups
+        for sw, pr, pu in zip(sorted(swaps, key=lambda x: x.anchor),
+                              sorted(prints, key=lambda x: x.anchor),
+                              sorted(puts, key=lambda x: x.anchor)):
+            assert sw.date == pr.date == pu.date and sw.anchor == pr.anchor == pu.anchor
+            assert t.index(sw) < t.index(pr) < t.index(pu)          # swaps, print, put on
+            assert pr.kind == "print_harvest_labels" and pu.kind == "apply_harvest_labels"
+            g = sw.anchor[1]
+            hv = sum(p.group == g and p.role in (dc.MEASURED, dc.SACRIFICIAL) for p in d.pots)
+            assert f"({2 * hv} bag labels)" in pr.notes and f"({4 * hv} KCl labels)" in pr.notes
+            assert pu.notes.startswith(f"{hv} KCl collection tubes and {2 * hv} bags")
+
+
+def test_default_team_jill_prints_lina_labels():
+    import team
+    assert team.DEFAULT_ROLES["print_harvest_labels"][0] == "Jill"
+    assert team.DEFAULT_ROLES["apply_harvest_labels"][0] == "Lina"
+    assert "kcl_setup" not in dc.TASK_KINDS
 
 
 def test_a_swaps_task_a_week_after_each_planting_day():

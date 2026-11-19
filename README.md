@@ -32,12 +32,13 @@ Treatment, flood, N2O and harvest may fall on any day, weekends included.
    | Label, plant seed, and initial wet-up of pots | planting day |
    | Label tables with treatment and group information per pot | planting day |
    | If using ZeaL genotypes, check for germination | every weekday of the 7 days after planting |
-   | Run swaps: replace failed pots with spares, discard unused spares | a week (5 working days) after each planting day |
+   | Run swaps: replace failed pots with spares, discard unused spares | a week (5 working days) after each planting day; relabel the promoted spares (`labels_RELABEL.zpl`) |
+   | Print harvest and KCl labels | the same day, after the swaps: the planting group's shoot and root bag labels (2 per pot to harvest) and KCl labels (4: collection tube, weighed tube, soil water tin, extract tube), from the session's label folder. Default: Jill |
+   | Label KCl collection tubes and shoot and root bags | the same day, after printing: the collection tubes and the bags only; the weighed tube, tin and extract labels wait for the KCl extractions. Default: Lina |
    | Maintenance watering | each watering day (one task per day, for every group and cohort still being watered) |
    | Make the treatment solutions | once, the working day before the first treatment (only when the plan has treatments); lists each treatment and its pots |
    | Apply treatments | treatment day (one task per day; cohorts treated on different days are named) |
-   | Print all labels | once, the working day before the first planting: 1 per pot (spares included), 2 per harvested plant (shoot and root biomass bags), 4 per soil sample (collection tube, weighed tube, soil water tin, extract tube); copies in `LABEL_COPIES` |
-   | KCl soil collection setup (gathering supplies, printing & labeling tubes) | once, for every soil sample of the experiment, with the setup: the working day before the first planting |
+   | Print pot labels | once, the working day before the first planting: 1 per pot, spares included (`labels_PLANTING.zpl`). Harvest and KCl labels are printed per planting group at its swap session |
    | Flood | flood day |
    | N2O measurements | each of the cohort's N2O days |
    | Plant harvest and soil sample collection | flood day (sacrificial pots) and after the last N2O (final) |
